@@ -516,8 +516,8 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
-    private func enterCooldown(_ id: UUID) {
-        let deadline = DispatchTime.now() + BLEConstants.failedPeerCooldownSeconds
+    private func enterCooldown(_ id: UUID, duration: TimeInterval = BLEConstants.failedPeerCooldownSeconds) {
+        let deadline = DispatchTime.now() + duration
         cooldowns[id] = deadline
         queue.asyncAfter(deadline: deadline) { [weak self] in
             guard let self, cooldowns[id] == deadline else { return }
@@ -659,9 +659,12 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
               peer.peripheral === peripheral else { return }
         centralPeers[peripheral.identifier] = nil
         if peer.phase != .cancelling {
-            enterCooldown(peripheral.identifier)
+            let cooldown = peripheral.identifier == lastAuthenticatedPeripheralID
+                ? BLEConstants.knownPeerConnectionFailureCooldownSeconds
+                : BLEConstants.failedPeerCooldownSeconds
+            enterCooldown(peripheral.identifier, duration: cooldown)
             recordError(.central, "connectionFailed", error ?? TransportError.connectionFailed,
-                        metadata: ["peerID": peripheral.identifier.uuidString])
+                        metadata: ["peerID": peripheral.identifier.uuidString, "cooldownSeconds": String(Int(cooldown))])
         }
         reconcileLaunchIfReady()
         refreshCentral(lookup: true)

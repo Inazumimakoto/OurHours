@@ -8,4 +8,5 @@ public enum BLEConstants {
     public static let peripheralRestoreIdentifier = "io.github.inazumimakoto.OurHours.peripheral"
     public static let authTimeoutSeconds: TimeInterval = 10
     public static let failedPeerCooldownSeconds: TimeInterval = 300
+    public static let knownPeerConnectionFailureCooldownSeconds: TimeInterval = 15
 }
