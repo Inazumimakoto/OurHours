@@ -754,6 +754,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         peer.characteristic = characteristic
         if characteristic.isNotifying {
             // Request a fresh challenge without unsubscribing a live restored partner link.
+            record(.auth, "helloSolicited", "Solicited server hello on existing subscription.", metadata: ["peerID": peripheral.identifier.uuidString])
             peripheral.writeValue(Data([0x00]), for: characteristic, type: .withResponse)
         } else {
             peripheral.setNotifyValue(true, for: characteristic)
@@ -769,6 +770,20 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
             failCentralAuth(peer, error: error)
         } else if !characteristic.isNotifying {
             failCentralAuth(peer, error: TransportError.subscriptionFailed)
+        } else if let token = peer.timeoutID {
+            let id = peripheral.identifier
+            queue.asyncAfter(deadline: .now() + .milliseconds(1500)) { [weak self] in
+                guard let self,
+                      let current = centralPeers[id],
+                      current.timeoutID == token,
+                      current.phase == .authenticating,
+                      !current.awaitingServerAuth,
+                      let char = current.characteristic,
+                      char.isNotifying else { return }
+                record(.auth, "helloSolicited", "Solicited server hello after subscribe silence.", metadata: ["peerID": id.uuidString])
+                current.peripheral.writeValue(Data([0x00]), for: char, type: .withResponse)
+                publish()
+            }
         }
     }
 
@@ -1015,7 +1030,8 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
             }
             peripheral.respond(to: request, withResult: .success)
             peripheralPeers[id] = nil
-            startPeripheralAuth(request.central, path: .restoredConnection)
+            let path: ConnectionPath = (!launchReconciled || coordinator.activeLinks.contains(.peripheral(id))) ? .restoredConnection : .incomingPeripheral
+            startPeripheralAuth(request.central, path: path)
             return
         }
         guard canRecord, var peer = peripheralPeers[id], var handshake = peer.handshake, peer.pending == nil else {
