@@ -1,0 +1,108 @@
+import Foundation
+import Testing
+import OurHoursCore
+
+struct JournalStoreTests {
+    private let store = JournalStore(
+        directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    )
+    private let start = Date(timeIntervalSince1970: 1_700_000_000)
+    private var end: Date { start.addingTimeInterval(1_800.5) }
+
+    @Test func manualRecordsPersistEditsAndDeletion() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        #expect(try store.load() == JournalSnapshot())
+        let pairID = UUID()
+        let added = try store.addManualRecord(pairID: pairID, startedAt: start, endedAt: end)
+        let original = try #require(added.manualRecords.first)
+        #expect(original.pairID == pairID)
+        #expect(original.startedAt == start && original.endedAt == end)
+        #expect(original.createdAt == original.updatedAt)
+        let otherStore = JournalStore(directory: store.directory)
+        #expect(try otherStore.load() == added)
+
+        let updatedEnd = end.addingTimeInterval(20)
+        let updated = try otherStore.updateManualRecord(id: original.id, startedAt: start, endedAt: updatedEnd)
+        let record = try #require(updated.manualRecords.first)
+        #expect(record.id == original.id && record.pairID == original.pairID)
+        #expect(record.createdAt == original.createdAt && record.updatedAt >= original.updatedAt)
+        #expect(record.endedAt == updatedEnd)
+        #expect(try store.load() == updated)
+        #expect(try store.deleteManualRecord(id: original.id) == JournalSnapshot())
+        #expect(try otherStore.load() == JournalSnapshot())
+    }
+
+    @Test func overridesAndMemosRoundTripAndCanBeCleared() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let sessionID = UUID()
+        let action = SessionOverrideAction.edited(startedAt: start, endedAt: end)
+        try store.setSessionOverride(sessionID: sessionID, action: action)
+        let dayKey = "2026-11-01"
+        let saved = try store.setMemo(dayKey: dayKey, text: "  Dinner\nTogether\n ")
+        #expect(saved.sessionOverrides[sessionID]?.action == action)
+        #expect(saved.dailyMemos[dayKey]?.text == "Dinner\nTogether")
+        #expect(try JournalStore(directory: store.directory).load() == saved)
+        #expect(try store.setMemo(dayKey: dayKey, text: "\n\t ").dailyMemos.isEmpty)
+        #expect(try store.setSessionOverride(sessionID: sessionID, action: .deleted)
+            .sessionOverrides[sessionID]?.action == .deleted)
+        #expect(try store.clearSessionOverride(sessionID: sessionID) == JournalSnapshot())
+
+        try store.addManualRecord(pairID: nil, startedAt: start, endedAt: end)
+        try store.setSessionOverride(sessionID: sessionID, action: .deleted)
+        try store.setMemo(dayKey: dayKey, text: "Dinner")
+        #expect(try store.clearAll() == JournalSnapshot())
+        #expect(try store.clearAll() == JournalSnapshot())
+        #expect(try store.load() == JournalSnapshot())
+    }
+
+    @Test func rejectedMutationsPreserveStoredSnapshot() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let saved = try store.addManualRecord(pairID: nil, startedAt: start, endedAt: end)
+        let record = try #require(saved.manualRecords.first)
+        #expect(throws: JournalStoreError.invalidTimeRange) {
+            try store.addManualRecord(pairID: nil, startedAt: start, endedAt: start)
+        }
+        #expect(throws: JournalStoreError.invalidTimeRange) {
+            try store.updateManualRecord(id: record.id, startedAt: end, endedAt: start)
+        }
+        #expect(throws: JournalStoreError.invalidTimeRange) {
+            try store.setSessionOverride(sessionID: UUID(), action: .edited(startedAt: end, endedAt: end))
+        }
+        #expect(throws: JournalStoreError.recordNotFound) {
+            try store.updateManualRecord(id: UUID(), startedAt: start, endedAt: end)
+        }
+        #expect(throws: JournalStoreError.recordNotFound) {
+            try store.deleteManualRecord(id: UUID())
+        }
+        #expect(try store.load() == saved)
+    }
+
+    @Test func corruptJournalThrowsAndPreservesData() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        let journalURL = store.directory.appendingPathComponent("journal.json")
+        let corrupt = Data("invalid json".utf8)
+        try corrupt.write(to: journalURL)
+
+        #expect(throws: DecodingError.self) { try store.load() }
+        #expect(throws: DecodingError.self) { try store.setMemo(dayKey: "2026-11-01", text: "Dinner") }
+        #expect(try Data(contentsOf: journalURL) == corrupt)
+    }
+
+    @Test func concurrentStoreInstancesPreserveAllWrites() async throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    try JournalStore(directory: store.directory).addManualRecord(
+                        pairID: nil, startedAt: start, endedAt: end
+                    )
+                }
+            }
+            try await group.waitForAll()
+        }
+        let records = try store.load().manualRecords
+        #expect(records.count == 16)
+        #expect(Set(records.map(\.id)).count == 16)
+    }
+}

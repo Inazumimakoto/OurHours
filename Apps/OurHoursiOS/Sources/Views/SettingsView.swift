@@ -2,11 +2,13 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
     @State private var showPairing = false
     @State private var confirmUnpair = false
     @State private var confirmClear = false
 
     var body: some View {
+        let state = model.snapshot
         Form {
             Section("記録") {
                 Toggle("自動記録", isOn: Binding(
@@ -34,7 +36,36 @@ struct SettingsView: View {
                     Button("ペアを設定する") { showPairing = true }
                 }
             }
+            Section("Bluetooth") {
+                LabeledContent("Central", value: state.centralState)
+                LabeledContent("Peripheral", value: state.peripheralState)
+                HStack {
+                    StatusBadge(title: state.isScanning ? "探索中" : "探索停止", active: state.isScanning)
+                    StatusBadge(title: state.isAdvertising ? "広告中" : "広告停止", active: state.isAdvertising)
+                }
+                LabeledContent("認証済みリンク", value: String(state.activeLinkCount))
+                ForEach(state.activeLinksSummary, id: \.self) { Text($0).font(.caption.monospaced()) }
+                LabeledContent(state.activeSession == nil ? "直近の接続経路" : "接続経路") {
+                    if let path = state.activeSession?.connectionPath ?? state.lastConnectionPath {
+                        StatusBadge(title: path.rawValue, active: state.activeSession != nil)
+                    } else { Text("未接続") }
+                }
+                LabeledContent("最終認証", value: state.lastAuthDate?.formatted() ?? "未認証")
+                if let error = state.lastErrorMessage {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                if state.centralState == "unauthorized" || state.peripheralState == "unauthorized" {
+                    Label("自動記録にはBluetoothの許可が必要です。", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Button("設定を開く") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(url)
+                        }
+                    }
+                }
+            }
             Section("診断") {
+                NavigationLink("BLE 診断ログ・書き出し") { LogsView() }
                 Button("デバッグログを消去", role: .destructive) { confirmClear = true }
                     .confirmationDialog("この端末のログを消去しますか？", isPresented: $confirmClear, titleVisibility: .visible) {
                         Button("消去する", role: .destructive) { model.clearLogs() }
@@ -46,5 +77,15 @@ struct SettingsView: View {
         }
         .navigationTitle("設定")
         .sheet(isPresented: $showPairing) { PairingView() }
+    }
+}
+
+private struct StatusBadge: View {
+    let title: String
+    let active: Bool
+    var body: some View {
+        Text(title).font(.caption.bold())
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(active ? Color.green.opacity(0.18) : Color.secondary.opacity(0.12), in: Capsule())
     }
 }

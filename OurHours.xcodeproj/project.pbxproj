@@ -175,7 +175,6 @@
 				Base,
 			);
 			mainGroup = AA0000050000000000000001;
-			minimizedProjectReferenceUploads = 1;
 			packageReferences = (
 				AA00000C0000000000000001 /* XCLocalSwiftPackageReference "Packages/OurHoursCore" */,
 			);

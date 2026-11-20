@@ -9,7 +9,7 @@ struct OurHoursiOSApp: App {
     var body: some Scene {
         WindowGroup {
             if let model = delegate.appModel {
-                RootTabView(appModel: model)
+                RootFoamView(appModel: model)
             } else {
                 ProgressView()
             }

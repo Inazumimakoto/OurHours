@@ -9,9 +9,16 @@ final class AppModel {
     private(set) var snapshot: EngineSnapshot
     @ObservationIgnored private var subscription: Task<Void, Never>?
 
-    init(engine: OurHoursBLEEngine) {
+    private let journalStore: JournalStore
+    private(set) var journal = JournalSnapshot()
+    var journalError: String?
+
+    init(engine: OurHoursBLEEngine, journalStore: JournalStore = JournalStore()) {
+        self.journalStore = journalStore
         self.engine = engine
         snapshot = engine.currentSnapshot()
+        do { journal = try journalStore.load() }
+        catch { journalError = error.localizedDescription }
         let snapshots = engine.snapshotStream()
         subscription = Task { [weak self] in
             for await value in snapshots {
@@ -23,6 +30,67 @@ final class AppModel {
     deinit { subscription?.cancel() }
 
     var isAutoRecordingEnabled: Bool { snapshot.isAutoRecordingEnabled }
+
+    var isTogetherNow: Bool { snapshot.activeSession != nil }
+    var activeSessionStartDate: Date? { snapshot.activeSession?.startedAt }
+    var resolvedEncounters: [ResolvedEncounter] {
+        EncounterCalendarAggregator.resolveEncounters(autoSessions: snapshot.sessions, journal: journal)
+    }
+
+    private func write(_ operation: (JournalStore) throws -> JournalSnapshot) {
+        do {
+            journal = try operation(journalStore)
+            journalError = nil
+        } catch { journalError = error.localizedDescription }
+    }
+
+    func addManualEncounter(startedAt: Date, endedAt: Date) {
+        write { try $0.addManualRecord(pairID: snapshot.pairConfiguration?.pairID, startedAt: startedAt, endedAt: endedAt) }
+    }
+
+    func updateResolvedEncounter(_ encounter: ResolvedEncounter, startedAt: Date, endedAt: Date) {
+        switch encounter.source {
+        case let .manual(id):
+            write { try $0.updateManualRecord(id: id, startedAt: startedAt, endedAt: endedAt) }
+        case let .auto(id), let .autoEdited(id):
+            write { try $0.setSessionOverride(sessionID: id, action: .edited(startedAt: startedAt, endedAt: endedAt)) }
+        }
+    }
+
+    func deleteResolvedEncounter(_ encounter: ResolvedEncounter) {
+        switch encounter.source {
+        case let .manual(id): write { try $0.deleteManualRecord(id: id) }
+        case let .auto(id), let .autoEdited(id): write { try $0.setSessionOverride(sessionID: id, action: .deleted) }
+        }
+    }
+
+    func completeUnknownEnd(sessionID: UUID, startedAt: Date, endedAt: Date) {
+        write { try $0.setSessionOverride(sessionID: sessionID, action: .edited(startedAt: startedAt, endedAt: endedAt)) }
+    }
+
+    func saveMemo(dayKey: String, text: String) {
+        write { try $0.setMemo(dayKey: dayKey, text: text) }
+    }
+
+    func daySummaries(forMonth monthDate: Date) -> [String: DaySummary] {
+        EncounterCalendarAggregator.daySummaries(forMonth: monthDate, autoSessions: snapshot.sessions, journal: journal)
+    }
+
+    func daySummary(for date: Date) -> DaySummary {
+        EncounterCalendarAggregator.daySummary(for: date, autoSessions: snapshot.sessions, journal: journal)
+    }
+
+    func monthlyRecordedSeconds(forMonth monthDate: Date) -> TimeInterval {
+        EncounterCalendarAggregator.monthlyRecordedSeconds(forMonth: monthDate, autoSessions: snapshot.sessions, journal: journal)
+    }
+
+    func metDayCount(forMonth monthDate: Date) -> Int {
+        EncounterCalendarAggregator.metDayCount(forMonth: monthDate, autoSessions: snapshot.sessions, journal: journal)
+    }
+
+    func lifetimeRecordedSeconds() -> TimeInterval {
+        EncounterCalendarAggregator.lifetimeRecordedSeconds(autoSessions: snapshot.sessions, journal: journal)
+    }
 
     func startInvitePairing() throws -> String {
         let bundle = PairingPayloadCodec.makePairingBundle()
