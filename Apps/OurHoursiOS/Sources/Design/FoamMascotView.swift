@@ -2,21 +2,27 @@ import SwiftUI
 
 struct FoamMascotView: View {
     let isTogether: Bool
+    var isPaired: Bool = true
     let onTapBurst: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
             Circle().fill(FoamTheme.cream).blur(radius: 24)
-                .frame(width: 175, height: 175).opacity(isTogether ? 0.85 : 0)
-            ForEach(0..<2) { index in
-                let side: CGFloat = index == 0 ? -1 : 1
-                FoamCharacter(index: index, reduceMotion: reduceMotion, onTap: onTapBurst)
-                    .rotationEffect(.degrees(side * (isTogether ? 9 : -7)))
-                    .offset(x: side * (isTogether ? 32 : 56), y: side * (isTogether ? 9 : 40))
+                .frame(width: 175, height: 175).opacity((isPaired && isTogether) ? 0.85 : 0)
+            if isPaired {
+                ForEach(0..<2) { index in
+                    let side: CGFloat = index == 0 ? -1 : 1
+                    FoamCharacter(index: index, reduceMotion: reduceMotion, onTap: onTapBurst)
+                        .rotationEffect(.degrees(side * (isTogether ? 9 : -7)))
+                        .offset(x: side * (isTogether ? 32 : 56), y: side * (isTogether ? 9 : 40))
+                }
+            } else {
+                FoamCharacter(index: 0, reduceMotion: reduceMotion, onTap: onTapBurst)
             }
         }
         .animation(reduceMotion ? nil : .spring(response: 0.85, dampingFraction: 0.72), value: isTogether)
+        .animation(reduceMotion ? nil : .spring(response: 0.85, dampingFraction: 0.72), value: isPaired)
     }
 }
 

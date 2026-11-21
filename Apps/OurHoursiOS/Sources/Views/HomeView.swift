@@ -35,7 +35,11 @@ struct HomeView: View {
                 }
             }
             Spacer()
-            FoamMascotView(isTogether: model.isTogetherNow, onTapBurst: onBurst)
+            FoamMascotView(
+                isTogether: model.isTogetherNow,
+                isPaired: model.snapshot.isPaired,
+                onTapBurst: onBurst
+            )
             Spacer()
             if model.isTogetherNow {
                 if let pending = latestUnknownEnd {
@@ -47,17 +51,20 @@ struct HomeView: View {
                     .padding(.bottom, 10)
                 }
             } else {
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     if !model.snapshot.isPaired {
                         Button("ペアを設定してはじめる", action: onPair)
                             .font(FoamFont.bold(16))
                             .foamButtonSurface()
                     } else {
-                        Text("今月 \(model.metDayCount(forMonth: .now))日 · \(FoamTheme.duration(model.monthlyRecordedSeconds(forMonth: .now)))")
-                            .font(FoamFont.bold(16))
-                        Text("累計 \(FoamTheme.duration(model.lifetimeRecordedSeconds()))")
-                            .font(FoamFont.medium(13, relativeTo: .caption))
-                            .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                        VStack(spacing: 4) {
+                            Text("今月 \(model.metDayCount(forMonth: .now))日 · \(FoamTheme.duration(model.monthlyRecordedSeconds(forMonth: .now)))")
+                                .font(FoamFont.bold(16))
+                            Text("累計 \(FoamTheme.duration(model.lifetimeRecordedSeconds()))")
+                                .font(FoamFont.medium(13, relativeTo: .caption))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                        }
+                        .foamCloudSurface(isTogether: false)
                     }
                     if CBManager.authorization == .denied || CBManager.authorization == .restricted
                         || model.snapshot.centralState == "unauthorized" || model.snapshot.peripheralState == "unauthorized" {
@@ -80,7 +87,7 @@ struct HomeView: View {
                         Text(error).font(FoamFont.regular(12, relativeTo: .caption))
                     }
                 }
-                .foamCloudSurface(isTogether: false)
+                .padding(.bottom, 10)
             }
         }.padding(.horizontal)
     }
