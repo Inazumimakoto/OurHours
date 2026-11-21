@@ -41,6 +41,7 @@ struct HomeView: View {
                         }
                     }
                 }
+                .zIndex(1)
             }
             Spacer()
             FoamMascotView(
@@ -51,6 +52,7 @@ struct HomeView: View {
                 activeSessionStartDate: model.activeSessionStartDate,
                 onTapBurst: onBurst
             )
+            .zIndex(0)
             Spacer()
             if model.isTogetherNow {
                 if let pending = latestUnknownEnd {
@@ -60,6 +62,7 @@ struct HomeView: View {
                     .font(FoamFont.bold(14))
                     .foamButtonSurface()
                     .padding(.bottom, 10)
+                    .zIndex(1)
                 }
             } else {
                 VStack(spacing: 12) {
@@ -110,6 +113,7 @@ struct HomeView: View {
                     }
                 }
                 .padding(.bottom, 10)
+                .zIndex(1)
             }
         }
         .padding(.horizontal)

@@ -20,10 +20,9 @@ struct FoamMascotView: View {
     private static func growthScale(isTogether: Bool, startDate: Date?, now: Date) -> CGFloat {
         guard isTogether, let startDate else { return 1.0 }
         let elapsed = max(0, now.timeIntervalSince(startDate))
-        // Smoothly grows from 1.0x up to 1.78x (~228pt) at 10 hours spent together.
-        let progress = min(1.0, elapsed / 36_000.0)
-        let eased = 1.0 - pow(1.0 - progress, 1.45)
-        return 1.0 + 0.78 * CGFloat(eased)
+        // Unbounded continuous growth at +0.78x per 10 hours spent together (1.78x at 10h, growing infinitely).
+        let progress = elapsed / 36_000.0
+        return 1.0 + 0.78 * CGFloat(progress)
     }
 
     @ViewBuilder
