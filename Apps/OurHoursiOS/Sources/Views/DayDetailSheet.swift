@@ -171,6 +171,7 @@ struct DayDetailSheet: View {
 
     var body: some View {
         let day = model.daySummary(for: currentDate)
+        let badges = SpecialDayBadgeResolver.badges(for: model.visibleCalendarSpecialDayEvents(on: currentDate), model: model)
         let activeDayStart = dayStart
         let liveMinutes = liveExtraMinutes(dayStart: activeDayStart)
         let computedScale = DayTimelineScale.compute(
@@ -202,6 +203,10 @@ struct DayDetailSheet: View {
                         VStack(spacing: 12) {
                             heroDurationCloud(day: day)
                                 .padding(.top, 2)
+
+                            if !badges.isEmpty {
+                                SpecialDayPillsRow(badges: badges)
+                            }
 
                             memoCloudCard(dayKey: day.dayKey)
 

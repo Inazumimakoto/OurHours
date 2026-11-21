@@ -12,6 +12,9 @@ final class AppModel {
         static let color = "ourhours.localBubbleColor"
         static let birthday = "ourhours.localBirthday"
         static let nickname = "ourhours.partnerNickname"
+        static let anniversaryMarkStyle = "ourhours.anniversaryMarkStyle"
+        static let myBirthdayMarkStyle = "ourhours.myBirthdayMarkStyle"
+        static let partnerBirthdayMarkStyle = "ourhours.partnerBirthdayMarkStyle"
     }
 
     private let userDefaults: UserDefaults
@@ -19,6 +22,9 @@ final class AppModel {
     private(set) var localBubbleColor: BubbleColorTheme
     private(set) var localBirthday: CalendarDateValue?
     private(set) var partnerNickname: String
+    private(set) var anniversaryMarkStyle: AnniversaryMarkStyle
+    private(set) var myBirthdayMarkStyle: BirthdayMarkStyle
+    private(set) var partnerBirthdayMarkStyle: BirthdayMarkStyle
     private(set) var bluetoothAuthorization = CBManager.authorization
     private(set) var confirmedPeerPairID: UUID?
 
@@ -67,6 +73,12 @@ final class AppModel {
             try? JSONDecoder().decode(CalendarDateValue.self, from: $0)
         }
         partnerNickname = userDefaults.string(forKey: DefaultsKey.nickname) ?? ""
+        anniversaryMarkStyle = userDefaults.string(forKey: DefaultsKey.anniversaryMarkStyle)
+            .flatMap(AnniversaryMarkStyle.init(rawValue:)) ?? .heart
+        myBirthdayMarkStyle = userDefaults.string(forKey: DefaultsKey.myBirthdayMarkStyle)
+            .flatMap(BirthdayMarkStyle.init(rawValue:)) ?? .cake
+        partnerBirthdayMarkStyle = userDefaults.string(forKey: DefaultsKey.partnerBirthdayMarkStyle)
+            .flatMap(BirthdayMarkStyle.init(rawValue:)) ?? .cake
         self.engine = engine
         self.journalStore = journalStore
         self.peerSyncStore = peerSyncStore
@@ -139,6 +151,38 @@ final class AppModel {
     var partnerBirthday: CalendarDateValue? { partnerProfile?.birthday }
     var anniversaryDate: CalendarDateValue? { journal.anniversary?.date }
 
+    var daysTogetherCount: Int? {
+        guard let anniversaryDate else { return nil }
+        return SpecialDayCalculator.daysTogether(since: anniversaryDate)
+    }
+
+    func daysTogetherCount(asOf date: Date) -> Int? {
+        guard let anniversaryDate else { return nil }
+        return SpecialDayCalculator.daysTogether(since: anniversaryDate, asOf: date)
+    }
+
+    var togetherStatusTitle: String {
+        let trimmed = partnerNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "いっしょにいるよ" : "\(trimmed)といっしょにいるよ"
+    }
+
+    func specialDayEvents(on date: Date) -> [SpecialDayEvent] {
+        SpecialDayCalculator.events(
+            on: date, anniversary: anniversaryDate, myBirthday: localBirthday, partnerBirthday: partnerBirthday
+        )
+    }
+
+    func visibleCalendarSpecialDayEvents(on date: Date) -> [SpecialDayEvent] {
+        specialDayEvents(on: date).filter { event in
+            switch event {
+            case .anniversary: anniversaryMarkStyle != .none
+            case .myBirthday: myBirthdayMarkStyle != .none
+            case .partnerBirthday: partnerBirthdayMarkStyle != .none
+            case .seasonal: true
+            }
+        }
+    }
+
     var displayPartnerName: String {
         let trimmed = partnerNickname.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "パートナー" : trimmed
@@ -176,6 +220,21 @@ final class AppModel {
     func setAnniversaryDate(_ date: CalendarDateValue?) {
         write { try $0.setAnniversary(date) }
         scheduleHistorySyncIfPaired()
+    }
+
+    func setAnniversaryMarkStyle(_ style: AnniversaryMarkStyle) {
+        anniversaryMarkStyle = style
+        userDefaults.set(style.rawValue, forKey: DefaultsKey.anniversaryMarkStyle)
+    }
+
+    func setMyBirthdayMarkStyle(_ style: BirthdayMarkStyle) {
+        myBirthdayMarkStyle = style
+        userDefaults.set(style.rawValue, forKey: DefaultsKey.myBirthdayMarkStyle)
+    }
+
+    func setPartnerBirthdayMarkStyle(_ style: BirthdayMarkStyle) {
+        partnerBirthdayMarkStyle = style
+        userDefaults.set(style.rawValue, forKey: DefaultsKey.partnerBirthdayMarkStyle)
     }
 
     func requestBluetoothPermission() {

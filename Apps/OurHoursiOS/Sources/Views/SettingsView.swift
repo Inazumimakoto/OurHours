@@ -95,8 +95,42 @@ struct SettingsView: View {
                     title: "記念日",
                     date: Binding(get: { model.anniversaryDate }, set: { model.setAnniversaryDate($0) })
                 )
+
+                Divider()
+                calendarMarkSettingsLink
             }
         }
+    }
+
+    private var calendarMarkSettingsLink: some View {
+        let anniversary = model.anniversaryMarkStyle
+        let mine = model.myBirthdayMarkStyle
+        let partner = model.partnerBirthdayMarkStyle
+
+        return NavigationLink {
+            CalendarMarkSettingsView()
+        } label: {
+            HStack(spacing: 8) {
+                Text("カレンダーの印")
+                    .font(FoamFont.bold(15, relativeTo: .subheadline))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                HStack(spacing: 6) {
+                    CalendarMarkIcon(symbolName: anniversary.symbolName, tint: anniversary.tintColor)
+                    CalendarMarkIcon(symbolName: mine.symbolName, tint: mine.tintColor(for: model.localBubbleColor))
+                    CalendarMarkIcon(symbolName: partner.symbolName, tint: partner.tintColor(for: model.partnerBubbleColor))
+                }
+                .font(.system(size: 13, weight: .bold))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.45))
+                    .accessibilityHidden(true)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue("記念日 \(anniversary.displayName)、自分の誕生日 \(mine.displayName)、相手の誕生日 \(partner.displayName)")
     }
 
     // MARK: - Top Navigation
@@ -596,6 +630,157 @@ private struct PartnerNicknameEditView: View {
     }
 }
 
+private struct CalendarMarkSettingsView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+
+    var body: some View {
+        ZStack {
+            FoamTheme.sky(together: model.isTogetherNow)
+                .ignoresSafeArea()
+            FoamAmbientBackgroundView(isTogether: model.isTogetherNow, softened: true)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        markCard(
+                            title: "記念日の印",
+                            seed: 1.8,
+                            styles: AnniversaryMarkStyle.allCases,
+                            selection: model.anniversaryMarkStyle,
+                            onSelect: model.setAnniversaryMarkStyle
+                        ) { style in
+                            (style.displayName, style.symbolName, style.tintColor)
+                        }
+
+                        markCard(
+                            title: "自分の誕生日の印",
+                            seed: 2.1,
+                            styles: BirthdayMarkStyle.allCases,
+                            selection: model.myBirthdayMarkStyle,
+                            onSelect: model.setMyBirthdayMarkStyle
+                        ) { style in
+                            (style.displayName, style.symbolName, style.tintColor(for: model.localBubbleColor))
+                        }
+
+                        markCard(
+                            title: "相手の誕生日の印",
+                            seed: 2.8,
+                            styles: BirthdayMarkStyle.allCases,
+                            selection: model.partnerBirthdayMarkStyle,
+                            onSelect: model.setPartnerBirthdayMarkStyle
+                        ) { style in
+                            (style.displayName, style.symbolName, style.tintColor(for: model.partnerBubbleColor))
+                        }
+
+                        Text("バレンタイン・ホワイトデー・クリスマスは自動で表示されます。印の設定はこの端末ごとに保存されます。")
+                            .font(FoamFont.regular(12.5, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.68))
+                            .padding(.horizontal, 6)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+                    .padding(.bottom, 34)
+                }
+            }
+        }
+        .foregroundStyle(FoamTheme.ink)
+        .preferredColorScheme(.light)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            FoamRoundIconButton(size: 40, accessibilityLabel: "戻る") {
+                dismiss()
+            } icon: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.82))
+            }
+            Text("カレンダーの印")
+                .font(FoamFont.bold(20, relativeTo: .title3))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .accessibilityAddTraits(.isHeader)
+            Color.clear
+                .frame(width: 40, height: 1)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func markCard<Style: Identifiable & Equatable>(
+        title: String,
+        seed: Double,
+        styles: [Style],
+        selection: Style,
+        onSelect: @escaping (Style) -> Void,
+        appearance: @escaping (Style) -> (title: String, symbolName: String?, tint: Color)
+    ) -> some View {
+        ReleaseBubbleCard(title: title, isTogether: model.isTogetherNow, seed: seed) {
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(styles) { style in
+                    let mark = appearance(style)
+                    let isSelected = selection == style
+                    Button {
+                        onSelect(style)
+                    } label: {
+                        VStack(spacing: 4) {
+                            CalendarMarkIcon(symbolName: mark.symbolName, tint: mark.tint)
+                                .font(.system(size: 18, weight: .semibold))
+                                .frame(height: 20)
+                            Text(mark.title)
+                                .font(FoamFont.bold(12.5, relativeTo: .caption))
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, minHeight: 58)
+                        .background(Color.white.opacity(isSelected ? 0.86 : 0.52), in: RoundedRectangle(cornerRadius: 14))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(isSelected ? FoamTheme.ink.opacity(0.36) : Color.white.opacity(0.72), lineWidth: 1)
+                        }
+                        .overlay(alignment: .topTrailing) {
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(6)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(title)、\(mark.title)")
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
+            }
+        }
+    }
+}
+
+private struct CalendarMarkIcon: View {
+    let symbolName: String?
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: symbolName ?? "circle.slash")
+            .foregroundStyle(symbolName == nil ? FoamTheme.ink.opacity(0.60) : tint)
+            .accessibilityHidden(true)
+    }
+}
+
 struct OptionalProfileDateRow: View {
     let title: String
     var unsetTitle: String? = nil
@@ -677,6 +862,7 @@ struct ReleaseBubbleCard<Content: View>: View {
                 .font(FoamFont.bold(13.5, relativeTo: .footnote))
                 .foregroundStyle(FoamTheme.ink.opacity(0.76))
                 .padding(.horizontal, 6)
+                .accessibilityAddTraits(.isHeader)
 
             content()
                 .padding(16)

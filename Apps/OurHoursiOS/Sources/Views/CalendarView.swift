@@ -342,26 +342,29 @@ private struct CalendarMonthPageView: View {
                 ForEach(1...max(1, daysCount), id: \.self) { day in
                     if let date = calendar.date(byAdding: .day, value: day - 1, to: monthFirst) {
                         let summary = summaries[EncounterCalendarAggregator.dayKey(for: date)]
+                        let badges = calendarBadges(on: date)
+                        let details = [
+                            summary.map { FoamTheme.duration($0.totalRecordedSeconds) },
+                            summary?.hasUnknownEnd == true ? "終了不明" : nil,
+                            summary?.memo
+                        ].compactMap { $0 }
                         Button {
                             guard canTapDay() else { return }
                             onSelectDay(date)
                         } label: {
-                            CalendarDayLabelCell(day: day, summary: summary)
+                            CalendarDayLabelCell(day: day, summary: summary, badges: badges)
                         }
                         .accessibilityLabel(Text(date, format: .dateTime.month().day()))
-                        .accessibilityValue(
-                            [
-                                summary.map { FoamTheme.duration($0.totalRecordedSeconds) },
-                                summary?.hasUnknownEnd == true ? "終了不明" : nil,
-                                summary?.memo
-                            ]
-                            .compactMap { $0 }
-                            .joined(separator: "、")
-                        )
+                        .accessibilityValue((details + badges.map(\.title)).joined(separator: "、"))
                     }
                 }
             }
         }
+    }
+
+    private func calendarBadges(on date: Date) -> [ResolvedSpecialDayBadge] {
+        let events = model.visibleCalendarSpecialDayEvents(on: date)
+        return SpecialDayBadgeResolver.badges(for: events, model: model)
     }
 
     private func summaryForDay(_ day: Int, daysCount: Int, summaries: [String: DaySummary]) -> DaySummary? {
@@ -551,13 +554,27 @@ private struct CalendarDayFoamLayer: View {
 private struct CalendarDayLabelCell: View {
     let day: Int
     let summary: DaySummary?
+    let badges: [ResolvedSpecialDayBadge]
 
     var body: some View {
         let hasRecord = (summary?.bubbleIntensity ?? .none) != .none
+        let offsets = badgeOffsets
+        let diameter: CGFloat = badges.count <= 1 ? 15 : 13
+        let symbolSize: CGFloat = badges.count <= 1 ? 9.5 : 8
+
         ZStack {
             Text("\(day)")
                 .font(hasRecord ? FoamFont.bold(16.5, relativeTo: .headline) : FoamFont.regular(15, relativeTo: .headline))
                 .foregroundStyle(hasRecord ? FoamTheme.ink : FoamTheme.ink.opacity(0.30))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+
+            ForEach(Array(badges.prefix(offsets.count).enumerated()), id: \.element.id) { index, badge in
+                badgeIcon(badge, diameter: diameter, symbolSize: symbolSize)
+                    .offset(x: offsets[index].x, y: offsets[index].y)
+            }
+
             if summary?.hasUnknownEnd == true {
                 Circle()
                     .fill(Color.orange)
@@ -574,6 +591,35 @@ private struct CalendarDayLabelCell: View {
         .frame(maxWidth: .infinity)
         .frame(height: 52)
         .contentShape(Rectangle())
+    }
+
+    private var badgeOffsets: [CGPoint] {
+        if summary?.hasUnknownEnd == true {
+            return [
+                CGPoint(x: -14, y: -14),
+                CGPoint(x: -14, y: 14),
+                CGPoint(x: 14, y: 14),
+                CGPoint(x: -14, y: 0)
+            ]
+        }
+        return [
+            CGPoint(x: -14, y: -14),
+            CGPoint(x: 14, y: -14),
+            CGPoint(x: -14, y: 14),
+            CGPoint(x: 14, y: 14)
+        ]
+    }
+
+    private func badgeIcon(_ badge: ResolvedSpecialDayBadge, diameter: CGFloat, symbolSize: CGFloat) -> some View {
+        Circle()
+            .fill(Color.white.opacity(0.84))
+            .frame(width: diameter, height: diameter)
+            .overlay {
+                Image(systemName: badge.symbolName)
+                    .font(.system(size: symbolSize, weight: .bold))
+                    .foregroundStyle(badge.tint)
+            }
+            .accessibilityHidden(true)
     }
 }
 

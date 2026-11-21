@@ -5,6 +5,8 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var referenceDate = Date.now
     let onPair: () -> Void
     let onBurst: () -> Void
     let onOpenUnknownEnd: (ResolvedEncounter) -> Void
@@ -28,9 +30,15 @@ struct HomeView: View {
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.68)
-                        Text("いっしょにいるよ")
+                        Text(model.togetherStatusTitle)
                             .font(FoamFont.bold(15, relativeTo: .subheadline))
+                            .multilineTextAlignment(.center)
                             .foamCloudSurface(isTogether: true, compact: true)
+                        if let days = model.daysTogetherCount(asOf: tick.date) {
+                            Text("付き合って \(days)日目")
+                                .font(FoamFont.bold(13.5, relativeTo: .caption))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                        }
                     }
                 }
             }
@@ -55,12 +63,23 @@ struct HomeView: View {
             } else {
                 VStack(spacing: 12) {
                     if !model.snapshot.isPaired {
+                        if let days = model.daysTogetherCount(asOf: referenceDate) {
+                            Text("付き合って \(days)日目")
+                                .font(FoamFont.bold(13.5, relativeTo: .caption))
+                                .foregroundStyle(FoamTheme.warmAccent)
+                                .foamCloudSurface(isTogether: false, compact: true)
+                        }
                         Button("ペアを設定してはじめる", action: onPair)
                             .font(FoamFont.bold(16))
                             .foamButtonSurface()
                     } else {
                         VStack(spacing: 4) {
-                            Text("今月 \(model.metDayCount(forMonth: .now))日 · \(FoamTheme.duration(model.monthlyRecordedSeconds(forMonth: .now)))")
+                            if let days = model.daysTogetherCount(asOf: referenceDate) {
+                                Text("付き合って \(days)日目")
+                                    .font(FoamFont.bold(13.5, relativeTo: .caption))
+                                    .foregroundStyle(FoamTheme.warmAccent)
+                            }
+                            Text("今月 \(model.metDayCount(forMonth: referenceDate))日 · \(FoamTheme.duration(model.monthlyRecordedSeconds(forMonth: referenceDate)))")
                                 .font(FoamFont.bold(16))
                             Text("累計 \(FoamTheme.duration(model.lifetimeRecordedSeconds()))")
                                 .font(FoamFont.medium(13, relativeTo: .caption))
@@ -91,6 +110,17 @@ struct HomeView: View {
                 }
                 .padding(.bottom, 10)
             }
-        }.padding(.horizontal)
+        }
+        .padding(.horizontal)
+        .onAppear { referenceDate = .now }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active { referenceDate = .now }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            referenceDate = .now
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            referenceDate = .now
+        }
     }
 }
