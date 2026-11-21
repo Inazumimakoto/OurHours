@@ -2,7 +2,7 @@
 """Render OurHours App Store screenshots from simulator PNGs. Requires Pillow."""
 
 import argparse
-from dataclasses import dataclass
+from bisect import bisect_right
 from functools import lru_cache
 import math
 from pathlib import Path
@@ -23,25 +23,16 @@ SOURCE = Path(__file__).resolve().parents[1] / "Apps/OurHoursiOS/Sources"
 ASSETS = SOURCE / "Assets.xcassets"
 DEFAULT_TEST_OUT = Path("/tmp/ourhours_screenshot_selftest")
 LANCZOS = Image.Resampling.LANCZOS
+BICUBIC = Image.Resampling.BICUBIC
+SCALE = 2
 PREVIEW_GAP = 12
 PREVIEW_SIZE = (264, 574)
 
 
-@dataclass(frozen=True)
-class Slide:
-    raw: str
-    output: str
-    title: str
-    subtitle: str
-
-
-SLIDES = (
-    Slide("raw_home.png", "01_home.png", "ふたりでいた時間を", "近くにいるだけで自動計測"),
-    Slide("raw_calendar.png", "02_calendar.png", "自動で記録、", "月間合計・記念日を一覧表示"),
-    Slide("raw_dayDetail.png", "03_timeline.png", "カレンダーで管理。", "1分単位で編集＆ひとことメモ"),
-    Slide("raw_pairing.png", "04_pairing.png", "QRコードでかんたん連携", "1回読み取るだけで設定完了"),
-    Slide("raw_settings.png", "05_privacy.png", "地図は非表示・完全暗号化", "位置座標は見せず、iCloudで同期"),
-)
+RAW_NAMES = ("raw_home.png", "raw_calendar.png", "raw_dayDetail.png", "raw_pairing.png")
+PANEL_NAMES = ("01_hero.png", "02_home.png", "03_calendar.png", "04_timeline.png", "05_pairing.png")
+PANORAMA_PREVIEW = "preview_panorama_1_2_3.png"
+ALL_PREVIEW = "preview_all_5.png"
 
 
 def color_ramp(stops, length):
@@ -96,59 +87,6 @@ def sky(width, palette):
     return canvas
 
 
-def rounded_mask(size, radius):
-    width, height = size
-    mask = Image.new("L", (2 * width, 2 * height))
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, 2 * width - 1, 2 * height - 1), radius=2 * radius, fill=255
-    )
-    return mask.resize(size, LANCZOS)
-
-
-def rounded_layer(canvas, box, radius, fill):
-    x, y, right, bottom = box
-    size = (right - x, bottom - y)
-    layer = fill if isinstance(fill, Image.Image) else Image.new("RGBA", size, fill)
-    mask = rounded_mask(size, radius)
-    layer.putalpha(ImageChops.multiply(layer.getchannel("A"), mask))
-    canvas.alpha_composite(layer, (x, y))
-
-
-def shadow(canvas, box, radius, blur, offset, color):
-    x, y, right, bottom = box
-    padding = blur * 3
-    face = rounded_mask((right - x, bottom - y), radius)
-    mask = Image.new("L", (face.width + 2 * padding, face.height + 2 * padding))
-    mask.paste(face, (padding, padding))
-    shade = Image.new("RGBA", mask.size, color)
-    shade.putalpha(mask.filter(ImageFilter.GaussianBlur(blur)).point(
-        [round(value * color[3] / 255) for value in range(256)]
-    ))
-    canvas.alpha_composite(shade, (x - padding, y - padding + offset))
-
-
-def glass(canvas, box, radius):
-    x, y, right, bottom = box
-    width, height = right - x, bottom - y
-    shadow(canvas, box, radius, 38, 15, (158, 123, 169, 42))
-    surface = canvas.crop(box).resize((width // 2, height // 2), Image.Resampling.BOX)
-    surface = surface.filter(ImageFilter.GaussianBlur(10)).resize((width, height), LANCZOS)
-    surface.alpha_composite(vertical_ramp((width, height), (
-        (0.0, (255, 255, 255, 186)),
-        (0.18, (255, 255, 255, 106)),
-        (0.72, (255, 253, 255, 85)),
-        (1.0, (248, 239, 255, 124)),
-    )))
-    edge = ImageChops.subtract(
-        rounded_mask((width, height), radius),
-        ImageOps.expand(rounded_mask((width - 8, height - 8), radius - 4), border=4),
-    )
-    border = Image.new("RGBA", (width, height), "white")
-    border.putalpha(edge.point(lambda value: round(value * 0.8)))
-    surface.alpha_composite(border)
-    rounded_layer(canvas, box, radius, surface)
-
-
 RIM_COLORS = (
     "#AC9DEE", "#EBA5D5", "#FFBBAA", "#FBE7A7",
     "#A1E1E2", "#AAC7FB", "#AC9DEE",
@@ -180,7 +118,7 @@ def reflection(draw, center, radius, start, end, thickness, opacity):
 
 def bubble_sprite(diameter, phase):
     """Combine the app's particle with a supersampled interference rim and specular arcs."""
-    scale = 2
+    scale = SCALE
     padding = max(8, round(diameter * 0.12))
     size = diameter + 2 * padding
     side = size * scale
@@ -273,19 +211,6 @@ def centered_text(draw, center, copy, face, fill=INK):
               copy, font=face, fill=fill)
 
 
-def banner_copy(canvas, center, slide):
-    draw = ImageDraw.Draw(canvas)
-    title = fitted_font(draw, slide.title, "Bold", 112, WIDTH - 2 * 137)
-    subtitle = fitted_font(draw, slide.subtitle, "Medium", 49, WIDTH - 2 * 175)
-    left, _, right, _ = draw.textbbox((0, 0), slide.subtitle, font=subtitle)
-    half_width = math.ceil((right - left) / 2) + 52
-    pill = (center - half_width, 386, center + half_width, 487)
-    rounded_layer(canvas, pill, 51, (255, 255, 255, 203))
-    rounded_layer(canvas, (pill[0] + 3, 389, pill[2] - 3, 484), 48, (248, 241, 250, 138))
-    centered_text(draw, (center, 288), slide.title, title)
-    centered_text(draw, (center, 436), slide.subtitle, subtitle)
-
-
 def normalized_screen(path):
     with Image.open(path) as source:
         screen = ImageOps.exif_transpose(source).convert("RGBA")
@@ -295,134 +220,431 @@ def normalized_screen(path):
     return ImageOps.fit(backing.convert("RGB"), SIZE, LANCZOS, centering=(0.5, 0.0))
 
 
-def phone(canvas, center, capture):
-    screen_height = 1902
-    screen_width = round(screen_height * WIDTH / HEIGHT)
-    bezel = 15
-    x = center - screen_width // 2 - bezel
-    y = 758
-    width, height = screen_width + 2 * bezel, screen_height + 2 * bezel
-    box = (x, y, x + width, y + height)
-    shadow(canvas, box, 69, 41, 29, (54, 42, 74, 93))
-    shadow(canvas, box, 69, 13, 12, (43, 36, 54, 62))
+def tinted_mask(mask, color, opacity=1.0):
+    layer = Image.new("RGBA", mask.size, color)
+    layer.putalpha(mask.point(lambda value: round(value * opacity)))
+    return layer
 
-    # Side controls, titanium edge, dark bezel, then the screen at its native aspect.
-    for button_x, button_y, button_width, button_height in (
-        (x - 5, y + 214, 10, 47),
-        (x - 6, y + 300, 11, 102),
-        (x - 6, y + 427, 11, 102),
-        (x + width - 5, y + 366, 11, 137),
-        (x + width - 4, y + 629, 9, 100),
-    ):
-        rounded_layer(canvas, (button_x, button_y, button_x + button_width,
-                               button_y + button_height), 4, "#4E4D5C")
-    rim = vertical_ramp((width, height), (
-        (0.0, (158, 156, 170, 255)),
-        (0.12, (96, 95, 111, 255)),
-        (0.52, (129, 126, 141, 255)),
-        (0.85, (62, 60, 75, 255)),
-        (1.0, (138, 135, 153, 255)),
+
+def diagonal_ramp(size, stops):
+    width, height = size
+    ramp = Image.new("RGBA", (1024, 1))
+    ramp.putdata(color_ramp(stops, ramp.width))
+    # Project the top-left to bottom-right gradient onto a one-pixel ramp.
+    length_squared = width ** 2 + height ** 2
+    return ramp.transform(
+        size, Image.Transform.AFFINE,
+        (1023 * width / length_squared, 1023 * height / length_squared, 0.5, 0, 0, 0.5),
+        BICUBIC,
+    )
+
+
+def organic_track(width, height, radius, seed, amplitude):
+    """Sample the SwiftUI OrganicBubbleShape by distance along the rounded perimeter."""
+    horizontal = width - 2 * radius
+    vertical = height - 2 * radius
+    quarter_arc = math.pi * radius / 2
+    ends = []
+    for length in (horizontal, quarter_arc, vertical, quarter_arc) * 2:
+        ends.append((ends[-1] if ends else 0) + length)
+    straight = (
+        (radius, 0, 1, 0), (width, radius, 0, 1),
+        (width - radius, height, -1, 0), (0, height - radius, 0, -1),
+    )
+    corners = (
+        (width - radius, radius), (width - radius, height - radius),
+        (radius, height - radius), (radius, radius),
+    )
+
+    def point(distance, inset=0):
+        distance %= ends[-1]
+        segment = bisect_right(ends, distance)
+        offset = distance - (ends[segment - 1] if segment else 0)
+        if segment % 2:
+            x, y = corners[segment // 2]
+            angle = (segment // 2 - 1) * math.pi / 2 + offset / radius
+            nx, ny = math.cos(angle), math.sin(angle)
+            x, y = x + radius * nx, y + radius * ny
+        else:
+            x, y, dx, dy = straight[segment // 2]
+            x, y = x + offset * dx, y + offset * dy
+            nx, ny = dy, -dx
+
+        theta = math.tau * distance / ends[-1]
+        wave = (1.15 * math.sin(3 * theta + seed)
+                + 0.78 * math.cos(5 * theta - 1.3 * seed)
+                + 0.45 * math.sin(7 * theta + 0.7 * seed))
+        shift = amplitude * wave / 2.38 - inset
+        return x + nx * shift, y + ny * shift
+
+    return point, ends
+
+
+def thin_film_highlights(surface, mask, track, ends, radius):
+    highlights = Image.new("RGBA", surface.size)
+    draw = ImageDraw.Draw(highlights)
+
+    def tapered_arc(start, end, inset, thickness, alpha):
+        outer, inner = [], []
+        for step in range(101):
+            t = step / 100
+            distance = start + (end - start) * t
+            half_width = thickness * math.sin(math.pi * t) ** 0.8 / 2
+            outer.append(track(distance, inset - half_width))
+            inner.append(track(distance, inset + half_width))
+        draw.polygon(outer + inner[::-1], fill=(255, 255, 255, alpha))
+
+    # Follow the same upper-left and lower-right curves as the wobbly rim.
+    tapered_arc(ends[-1] - 1.29 * radius, radius * 0.76, 18 * SCALE, 12 * SCALE, 237)
+    tapered_arc(ends[2] + 0.24 * radius, ends[2] + 1.43 * radius, 17 * SCALE, 8 * SCALE, 128)
+    x, y = track(ends[-2] - 10 * SCALE, 24 * SCALE)
+    dot_radius = 6 * SCALE
+    draw.ellipse((x - dot_radius, y - dot_radius, x + dot_radius, y + dot_radius),
+                 fill=(255, 255, 255, 228))
+    shine = highlights.filter(ImageFilter.GaussianBlur(4 * SCALE))
+    shine.alpha_composite(highlights)
+    shine.putalpha(ImageChops.multiply(mask, shine.getchannel("A")))
+    surface.alpha_composite(shine)
+
+
+def bubble_card(canvas, box, lines, seed, max_size, tint, subtitle=None):
+    x, y, right, bottom = box
+    width, height = (right - x) * SCALE, (bottom - y) * SCALE
+    padding = 48 * SCALE
+    size = width + 2 * padding, height + 2 * padding
+    radius = height * 0.43
+    point, ends = organic_track(width, height, radius, seed, height * 0.062)
+
+    def track(distance, inset=0):
+        px, py = point(distance, inset)
+        return px + padding, py + padding
+
+    contour = [track(ends[-1] * step / 720) for step in range(720)]
+    contour.append(contour[0])
+
+    def stroke(width, offset=0):
+        mask = Image.new("L", size)
+        ImageDraw.Draw(mask).line(
+            [(px, py + offset * SCALE) for px, py in contour],
+            fill=255, width=width * SCALE, joint="curve",
+        )
+        return mask
+
+    mask = Image.new("L", size)
+    ImageDraw.Draw(mask).polygon(contour, fill=255)
+    surface = tinted_mask(stroke(13, 9).filter(ImageFilter.GaussianBlur(4 * SCALE)), INK, 0.09)
+    veil = diagonal_ramp(size, (
+        (0.0, (255, 255, 255, 170)), (0.51, (255, 255, 255, 46)),
+        (1.0, (*ImageColor.getrgb(tint), 77)),
     ))
-    rounded_layer(canvas, box, 69, rim)
-    rounded_layer(canvas, (x + 4, y + 4, x + width - 4, y + height - 4), 65, "#1F222E")
-    screen = capture.resize((screen_width, screen_height), LANCZOS).convert("RGBA")
-    rounded_layer(canvas, (x + bezel, y + bezel, x + bezel + screen_width,
-                           y + bezel + screen_height), 54, screen)
+    veil.putalpha(ImageChops.multiply(mask, veil.getchannel("A")))
+    surface.alpha_composite(veil)
 
-
-def panorama(screens):
-    canvas = sky(3 * WIDTH, SKY)
-    bubbles(canvas, (
-        (335, 74, 66, 25), (819, 141, 213, 59), (1086, 56, 51, 142),
-        (1498, 115, 81, 16), (1854, 112, 175, 41), (2450, 62, 92, 216),
-        (2792, 170, 155, 167), (3274, 96, 70, 42), (3634, 113, 174, 19),
-        (62, 1092, 290, 90), (1213, 1048, 167, 168), (1360, 1518, 152, 102),
-        (1430, 2218, 145, 20), (2573, 1554, 240, 127), (2702, 2195, 170, 148),
-        (3896, 1382, 280, 154), (87, 2415, 195, 24), (3720, 2478, 148, 106),
-    ), opacity=0.59)
-    glass(canvas, (84, 150, 3 * WIDTH - 84, 560), 166)
-    glass(canvas, (94, 720, 3 * WIDTH - 94, 2740), 154)
-    bubbles(canvas, (
-        (109, 586, 166, 28), (66, 722, 100, 15), (185, 774, 66, 109),
-        (273, 674, 45, 200), (941, 645, 86, 128), (1050, 603, 41, 34),
-        (1298, 681, 136, 120), (1431, 611, 62, 3), (1712, 668, 45, 65),
-        (2262, 642, 72, 74), (2536, 665, 93, 157), (2678, 609, 121, 25),
-        (2765, 730, 57, 108), (3514, 675, 51, 55), (3662, 759, 75, 94),
-        (3781, 685, 114, 145), (3873, 573, 172, 28),
-        (1166, 1866, 70, 214), (1425, 1336, 103, 88),
-        (2525, 1933, 91, 83), (2709, 1983, 81, 133), (2668, 944, 120, 31),
-        (178, 2747, 112, 125), (1143, 2768, 91, 30), (1320, 2652, 376, 82),
-        (1539, 2796, 64, 62), (2254, 2807, 66, 70), (2750, 2704, 118, 20),
-        (2811, 2806, 52, 161), (3677, 2797, 99, 138), (3961, 2854, 462, 131),
+    iridescence = diagonal_ramp(size, (
+        (0.0, (255, 255, 255, 245)), (0.22, (147, 228, 255, 228)),
+        (0.43, (255, 157, 214, 224)), (0.63, (179, 181, 255, 229)),
+        (0.82, (255, 225, 155, 238)), (1.0, (255, 255, 255, 245)),
     ))
-    for index, (slide, screen) in enumerate(zip(SLIDES[:3], screens)):
-        center = index * WIDTH + WIDTH // 2
-        banner_copy(canvas, center, slide)
-        phone(canvas, center, screen)
+    iridescent_alpha = iridescence.getchannel("A")
+    for stroke_width, opacity, inside in ((43, 0.24, True), (24, 0.46, True),
+                                           (17, 0.25, False), (9, 0.95, False)):
+        edge = stroke(stroke_width)
+        if inside:
+            edge = ImageChops.multiply(edge, mask)
+        alpha = ImageChops.multiply(edge, iridescent_alpha)
+        iridescence.putalpha(alpha.point(lambda value: round(value * opacity)))
+        surface.alpha_composite(iridescence)
+    thin_film_highlights(surface, mask, track, ends, radius)
+
+    draw = ImageDraw.Draw(surface)
+    headline = fitted_font(draw, max(lines, key=len), "Bold", max_size * SCALE, width * 0.81)
+    center_y = padding + height * (0.44 if subtitle else 0.50)
+    leading = headline.size * 1.22
+    for index, copy in enumerate(lines):
+        centered_text(draw, (size[0] / 2, center_y + (index - 0.5) * leading), copy, headline)
+    if subtitle:
+        chip_font = fitted_font(draw, subtitle, "Bold", 43 * SCALE, width * 0.73)
+        chip_half_width = draw.textlength(subtitle, font=chip_font) / 2 + 32 * SCALE
+        chip_x, chip_y = size[0] / 2, padding + 0.74 * height
+        chip = (chip_x - chip_half_width, chip_y - 34 * SCALE,
+                chip_x + chip_half_width, chip_y + 34 * SCALE)
+        pill_layer = Image.new("RGBA", size)
+        ImageDraw.Draw(pill_layer).rounded_rectangle(
+            chip, radius=34 * SCALE, fill=(255, 255, 255, 170),
+            outline=(255, 255, 255, 205), width=2 * SCALE,
+        )
+        surface.alpha_composite(pill_layer)
+        centered_text(draw, (chip_x, chip_y), subtitle, chip_font)
+
+    canvas.alpha_composite(surface.resize((size[0] // SCALE, size[1] // SCALE), LANCZOS),
+                           (x - padding // SCALE, y - padding // SCALE))
+
+
+def continuous_corner_mask(size, radius):
+    """Local G2 corners with straight sides. The quintic has zero endpoint curvature."""
+    width, height = size
+    control = (0, 0, 0, 0.40, 0.72, 1)
+    corner = []
+    for step in range(129):
+        t = step / 128
+        weights = [math.comb(5, i) * t ** i * (1 - t) ** (5 - i) for i in range(6)]
+        corner.append(tuple(radius * sum(w * c for w, c in zip(weights, axis))
+                            for axis in (control, control[::-1])))
+    right, bottom = width - 1, height - 1
+    mask = Image.new("L", size)
+    ImageDraw.Draw(mask).polygon(
+        corner
+        + [(right - x, y) for x, y in reversed(corner)]
+        + [(right - x, bottom - y) for x, y in corner]
+        + [(x, bottom - y) for x, y in reversed(corner)],
+        fill=255,
+    )
+    return mask
+
+
+def phone(canvas, capture, screen_width, top_center, lean=0):
+    """Frame and transform the shadow and device in the same 2× coordinate space."""
+    display_width = screen_width * SCALE
+    display_height = round(display_width * HEIGHT / WIDTH)
+    bezel = round(0.024 * display_width)
+    radius = round(0.148 * display_width)
+    frame_width = display_width + 2 * bezel
+    frame_height = display_height + 2 * bezel
+    padding = 144 * SCALE
+    size = frame_width + 2 * padding, frame_height + 2 * padding
+    piece = Image.new("RGBA", size)
+    frame_mask = continuous_corner_mask((frame_width, frame_height), radius + bezel)
+    for blur, offset, opacity in ((44, 26, 0.19), (19, 12, 0.17), (6, 4, 0.19)):
+        shade = Image.new("L", size)
+        shade.paste(frame_mask, (padding, padding + offset * SCALE))
+        piece.alpha_composite(tinted_mask(shade.filter(ImageFilter.GaussianBlur(blur * SCALE)),
+                                         INK, opacity))
+
+    draw = ImageDraw.Draw(piece)
+    for side, y, length in ((-1, 0.20, 0.048), (-1, 0.30, 0.089), (-1, 0.418, 0.089),
+                            (1, 0.34, 0.125), (1, 0.62, 0.084)):
+        x = padding + (frame_width if side == 1 else 0)
+        button_y = padding + round(y * display_width)
+        draw.rounded_rectangle(
+            (x - 7 * SCALE, button_y, x + 7 * SCALE, button_y + length * display_width),
+            radius=5 * SCALE, fill="#7C7A82", outline="#D6D3D9", width=SCALE,
+        )
+
+    rim = vertical_ramp(frame_mask.size, (
+        (0.0, (239, 235, 239, 255)), (0.028, (164, 159, 168, 255)),
+        (0.17, (214, 208, 213, 255)), (0.42, (130, 127, 137, 255)),
+        (0.66, (199, 194, 201, 255)), (1.0, (123, 122, 133, 255)),
+    ))
+    rim.putalpha(frame_mask)
+    piece.alpha_composite(rim, (padding, padding))
+    edge = 6 * SCALE
+    inner_mask = continuous_corner_mask(
+        (frame_width - 2 * edge, frame_height - 2 * edge), radius + bezel - edge,
+    )
+    piece.alpha_composite(tinted_mask(inner_mask, "#24242E"), (padding + edge, padding + edge))
+    screen = capture.resize((display_width, display_height), LANCZOS).convert("RGBA")
+    screen.putalpha(continuous_corner_mask(screen.size, radius))
+    piece.alpha_composite(screen, (padding + bezel, padding + bezel))
+    place_phone(canvas, piece, (padding + frame_width / 2, padding), top_center, lean)
+
+
+def place_phone(canvas, piece, anchor, top_center, lean):
+    # Map the visible destination back into the supersampled layer. This keeps
+    # the off-canvas part of the device out of the rotated pixel buffer.
+    sin, cos = math.sin(math.radians(lean)), math.cos(math.radians(lean))
+    ax, ay = anchor
+    tx, ty = (coordinate * SCALE for coordinate in top_center)
+    corners = [(tx + cos * (x - ax) + sin * (y - ay),
+                ty - sin * (x - ax) + cos * (y - ay))
+               for x in (0, piece.width) for y in (0, piece.height)]
+    left = max(0, math.floor(min(x for x, _ in corners) / SCALE))
+    top = max(0, math.floor(min(y for _, y in corners) / SCALE))
+    right = min(canvas.width, math.ceil(max(x for x, _ in corners) / SCALE))
+    bottom = min(canvas.height, math.ceil(max(y for _, y in corners) / SCALE))
+    dx, dy = left * SCALE - tx, top * SCALE - ty
+    visible = piece.transform(
+        ((right - left) * SCALE, (bottom - top) * SCALE), Image.Transform.AFFINE,
+        (cos, -sin, ax + cos * dx - sin * dy, sin, cos, ay + sin * dx + cos * dy),
+        BICUBIC,
+    )
+    canvas.alpha_composite(visible.resize((right - left, bottom - top), LANCZOS),
+                           (left, top))
+
+
+MASCOT_TINTS = (
+    ((222, 250, 255), (150, 209, 252), (84, 156, 222)),
+    ((255, 232, 245), (255, 184, 212), (219, 115, 163)),
+)
+
+
+@lru_cache(maxsize=1)
+def mascot_texture():
+    with Image.open(ASSETS / "BubbleMascot.imageset/bubble_mascot.png") as source:
+        return source.convert("RGBA")
+
+
+def round_stroke(draw, points, width, fill):
+    draw.line(points, fill=fill, width=width, joint="curve")
+    radius = width / 2
+    for x, y in (points[0], points[-1]):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
+
+
+def quadratic(start, control, end):
     return [
-        canvas.crop((index * WIDTH, 0, (index + 1) * WIDTH, HEIGHT)).convert("RGB")
-        for index in range(3)
+        tuple((1 - t) ** 2 * a + 2 * t * (1 - t) * b + t ** 2 * c
+              for a, b, c in zip(start, control, end))
+        for t in (step / 32 for step in range(33))
     ]
 
 
-def standalone(slide, screen, palette, mirror=False):
+def mascot(canvas, center, diameter, pink=False):
+    texture = mascot_texture()
+    side = round(diameter * texture.width / (texture.getbbox()[2] - texture.getbbox()[0]))
+    size = (side * SCALE, side * SCALE)
+    unit = size[0] / 128
+    light, tint, deep = MASCOT_TINTS[pink]
+    colors = color_ramp(((0.0, (*light, 43)), (0.52, (*tint, 163)), (1.0, (*deep, 126))), 256)
+    # Affine-map a radial ramp to the app's top-leading light source.
+    extent = size[0] * 0.84
+    radial = Image.radial_gradient("L").transform(
+        size, Image.Transform.AFFINE,
+        (127 / extent, 0, 128 - 11.5 * unit * 127 / extent,
+         0, 127 / extent, 128 - 11.5 * unit * 127 / extent),
+        BICUBIC,
+    )
+    channels = [radial.point(list(channel)) for channel in zip(*colors)]
+    disc = Image.new("L", size)
+    ImageDraw.Draw(disc).ellipse((11.5 * unit, 11.5 * unit, 116.5 * unit, 116.5 * unit), fill=255)
+    channels[3] = ImageChops.multiply(channels[3], disc)
+    avatar = Image.merge("RGBA", channels)
+    avatar.alpha_composite(texture.resize(size, LANCZOS))
+
+    face = Image.new("RGBA", size)
+    blush_mask = Image.new("L", size)
+    blush = ImageDraw.Draw(blush_mask)
+    for x in (37, 91):
+        blush.ellipse(((x - 11) * unit, 65 * unit, (x + 11) * unit, 78 * unit), fill=135)
+    face.alpha_composite(tinted_mask(blush_mask.filter(ImageFilter.GaussianBlur(3.1 * unit)),
+                                     "#EE75A6"))
+    draw = ImageDraw.Draw(face)
+
+    def stroke(points, weight):
+        round_stroke(draw, [(x * unit, y * unit) for x, y in points], round(weight * unit), INK)
+
+    for index, x in enumerate((46, 81)):
+        if pink:
+            direction = 1 if index == 0 else -1
+            point = (x + 5 * direction, 60)
+            stroke(quadratic((x - 6 * direction, 54.5), (x - direction, 56), point)
+                   + quadratic(point, (x - direction, 64), (x - 6 * direction, 65.5)), 3.1)
+        else:
+            stroke(quadratic((x - 6, 61), (x, 51), (x + 6, 61)), 3.1)
+    stroke(quadratic((55, 70), (63, 81), (72, 70)), 3.1)
+    avatar.alpha_composite(face)
+    avatar = avatar.rotate(-8 if pink else 9, BICUBIC).resize((side, side), LANCZOS)
+    canvas.alpha_composite(avatar, (center[0] - side // 2, center[1] - side // 2))
+
+
+def panorama(home, calendar):
+    canvas = sky(3 * WIDTH, SKY)
+    bubbles(canvas, (
+        (82, 100, 156, 25), (286, 89, 52, 114), (498, 150, 93, 30),
+        (967, 88, 132, 59), (1178, 163, 60, 142), (1456, 152, 109, 16),
+        (1764, 305, 202, 41), (2000, 137, 58, 110), (2258, 233, 109, 76),
+        (2640, 396, 312, 216), (2493, 146, 74, 54), (2830, 191, 122, 5),
+        (3075, 365, 196, 167), (3249, 140, 72, 42), (3520, 154, 128, 19),
+        (3790, 96, 226, 81), (3935, 320, 112, 162),
+        (21, 557, 170, 156), (1280, 630, 121, 23), (1439, 526, 209, 98),
+        (125, 1021, 206, 95), (297, 1186, 78, 26), (494, 992, 56, 152),
+        (660, 1256, 204, 23), (864, 1111, 91, 84), (1089, 1226, 155, 73),
+        (1320, 1010, 254, 127), (1528, 790, 73, 199), (1482, 1425, 130, 45),
+        (2482, 711, 136, 167), (2780, 830, 100, 138), (2594, 1074, 174, 17),
+        (2335, 523, 58, 201), (2697, 1237, 74, 163),
+        (77, 1368, 138, 71), (412, 1471, 113, 69), (835, 1510, 136, 35),
+        (1169, 1605, 118, 214), (54, 2266, 104, 55), (450, 2441, 145, 152),
+        (1258, 2365, 169, 134), (1332, 1814, 145, 20), (1580, 2143, 202, 58),
+        (1389, 2082, 66, 25), (1456, 2432, 91, 151), (1734, 2535, 263, 143),
+        (120, 2681, 231, 61), (337, 2586, 78, 31), (668, 2730, 151, 94),
+        (1004, 2713, 55, 145), (1320, 2722, 308, 82), (1548, 2777, 78, 62),
+        (1972, 2814, 155, 78), (3700, 1935, 196, 148), (3834, 1700, 77, 48),
+        (3882, 2280, 278, 106), (3610, 2441, 106, 45), (3424, 2579, 172, 151),
+        (3788, 2637, 143, 161), (3955, 2845, 302, 131), (3270, 2822, 122, 10),
+    ), opacity=0.79)
+    bubble_card(canvas, (100, 236, 1220, 941), ("2人の時間を", "自動で記録"),
+                seed=1.8, max_size=150, tint="#FFCEE8")
+    # Keep the calendar's last row above the foreground phone's titanium edge.
+    phone(canvas, calendar, 1060, (3727, 665), lean=-27)
+    phone(canvas, home, 1060, (1762, 1005), lean=26)
+    mascot(canvas, (405, 1910), 780)
+    mascot(canvas, (956, 2190), 720, pink=True)
+    bubbles(canvas, (
+        (97, 1589, 73, 120), (265, 1518, 49, 185), (748, 1612, 87, 105),
+        (1230, 1825, 60, 35), (615, 2395, 66, 70), (752, 2588, 52, 136),
+        (1194, 2561, 114, 186), (22, 2449, 137, 57), (530, 2817, 50, 117),
+        (2640, 654, 155, 30),
+    ), opacity=0.88)
+    return [canvas.crop((i * WIDTH, 0, (i + 1) * WIDTH, HEIGHT)).convert("RGB") for i in range(3)]
+
+
+def standalone(screen, pairing=False):
+    palette = ("#FCEADB", "#F7E4EE", "#DDE6FF") if pairing else ("#FFE1CA", "#FBEBDE", "#F8E6F1")
     canvas = sky(WIDTH, palette)
-    background = (
-        (282, 84, 84, 131), (846, 136, 227, 55), (1146, 69, 76, 33),
-        (109, 1171, 330, 162), (1197, 1558, 252, 101), (108, 2403, 202, 68),
+    placements = (
+        (66, 80, 135, 25), (252, 107, 83, 131), (495, 68, 55, 19),
+        (821, 94, 158, 55), (1127, 109, 77, 33), (1278, 233, 180, 151),
+        (20, 473, 140, 196), (1296, 572, 93, 128), (71, 752, 116, 31),
+        (189, 812, 63, 116), (407, 823, 47, 70), (884, 839, 69, 42),
+        (1131, 829, 152, 133), (1298, 845, 131, 17), (42, 1050, 184, 162),
+        (1252, 1170, 83, 69), (24, 1450, 112, 43), (1308, 1546, 200, 101),
+        (66, 1760, 75, 89), (1282, 1875, 62, 82), (42, 2133, 151, 32),
+        (1316, 2200, 145, 149), (25, 2459, 95, 51), (1296, 2565, 101, 95),
+        (45, 2812, 221, 119), (1307, 2771, 71, 13),
     )
-    foreground = (
-        (102, 576, 163, 31), (65, 717, 96, 145), (177, 758, 55, 21),
-        (258, 658, 43, 71), (899, 635, 66, 110), (1035, 697, 85, 72),
-        (1149, 753, 78, 131), (1213, 637, 120, 163), (1289, 527, 155, 26),
-        (1155, 1118, 87, 95), (138, 1918, 93, 32), (1204, 2168, 110, 129),
-        (78, 2610, 123, 42), (168, 2755, 191, 89), (330, 2802, 63, 20),
-        (1023, 2770, 80, 77), (1301, 2838, 382, 119),
-    )
-    if mirror:
-        background = [(WIDTH - x, y, diameter, phase) for x, y, diameter, phase in background]
-        foreground = [(WIDTH - x, y, diameter, phase) for x, y, diameter, phase in foreground]
-    bubbles(canvas, background, opacity=0.60)
-    glass(canvas, (84, 150, WIDTH - 84, 560), 166)
-    glass(canvas, (94, 720, WIDTH - 94, 2740), 154)
-    bubbles(canvas, foreground)
-    banner_copy(canvas, WIDTH // 2, slide)
-    phone(canvas, WIDTH // 2, screen)
+    if pairing:
+        placements = [(WIDTH - x, y, diameter, phase) for x, y, diameter, phase in placements]
+    bubbles(canvas, placements, opacity=0.83)
+    if pairing:
+        bubble_card(canvas, (96, 220, 1224, 754), ("QRコードで", "かんたんペア設定"),
+                    seed=3.6, max_size=111, tint="#D3DCFF", subtitle="iCloudで自動同期・地図は非表示")
+        phone(canvas, screen, 1060, (660, 940))
+    else:
+        bubble_card(canvas, (96, 219, 1224, 754), ("1分単位で編集", "ひとことメモも共有"),
+                    seed=0.6, max_size=111, tint="#FFD6EC")
+        phone(canvas, screen, 1010, (660, 884))
     return canvas.convert("RGB")
 
 
-def preview(panels):
+def preview(panels, gap=0):
     width, height = PREVIEW_SIZE
-    strip = Image.new("RGB", (len(panels) * (width + PREVIEW_GAP) + PREVIEW_GAP,
-                              height + 2 * PREVIEW_GAP), "#F7F7FA")
+    strip = Image.new("RGB", (len(panels) * width + (len(panels) + 1) * gap,
+                              height + 2 * gap), "#F7F7FA")
     for index, panel in enumerate(panels):
-        left = PREVIEW_GAP + index * (width + PREVIEW_GAP)
-        strip.paste(panel.resize(PREVIEW_SIZE, LANCZOS), (left, PREVIEW_GAP))
+        strip.paste(panel.resize(PREVIEW_SIZE, LANCZOS), (gap + index * (width + gap), gap))
     return strip
 
 
 def render(raw_dir, out_dir):
-    missing = [slide.raw for slide in SLIDES if not (raw_dir / slide.raw).is_file()]
+    missing = [name for name in RAW_NAMES if not (raw_dir / name).is_file()]
     if missing:
         raise FileNotFoundError(f"Missing simulator PNGs in {raw_dir}: {', '.join(missing)}")
-    screens = [normalized_screen(raw_dir / slide.raw) for slide in SLIDES]
-    panels = panorama(screens[:3])
-    panels.append(standalone(SLIDES[3], screens[3], ("#FFE2CB", "#FBEBDE", "#F8E7F2")))
-    panels.append(standalone(SLIDES[4], screens[4], ("#FCE8DC", "#F8E8F2", "#E6EBFF"), mirror=True))
+    home, calendar, day_detail, pairing = (normalized_screen(raw_dir / name) for name in RAW_NAMES)
+    panels = panorama(home, calendar)
+    panels.extend((standalone(day_detail), standalone(pairing, pairing=True)))
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for slide, panel in zip(SLIDES, panels):
-        panel.save(out_dir / slide.output)
-    preview(panels[:3]).save(out_dir / "preview_panorama_1_2_3.png")
-    preview(panels).save(out_dir / "preview_all_5.png")
+    for name, panel in zip(PANEL_NAMES, panels):
+        panel.save(out_dir / name)
+    preview(panels[:3]).save(out_dir / PANORAMA_PREVIEW)
+    preview(panels, gap=PREVIEW_GAP).save(out_dir / ALL_PREVIEW)
 
 
 def mock_screens(raw_dir):
-    titles = ("", "カレンダー", "11月21日（土）", "ペア設定", "設定")
+    titles = ("", "カレンダー", "11月21日（土）", "ペア設定")
+    backgrounds = ("#FCE8DC", "#C3CFF8", "#C3CDF5", "#CED7FA")
     rng = random.Random(42)
-    for index, (slide, title) in enumerate(zip(SLIDES, titles)):
-        base = Image.new("RGBA", SIZE, ("#FCE8DC", "#F9EAF0", "#F7EDF8",
-                                        "#FFEBDD", "#F8EEF7")[index])
+    for index, (name, title, background) in enumerate(zip(RAW_NAMES, titles, backgrounds)):
+        base = Image.new("RGBA", SIZE, background)
         glow(base, (960, 1770), (2140, 2250), "#FFFFFF", 200)
         draw = ImageDraw.Draw(base)
         draw.text((105, 67), "9:41", font=font("Bold", 43), fill=INK)
@@ -437,22 +659,30 @@ def mock_screens(raw_dir):
         centered_text(draw, (660, 236), title, font("Bold", 64))
 
         if index == 0:
-            with Image.open(ASSETS / "BubbleMascot.imageset/bubble_mascot.png") as mascot:
-                base.alpha_composite(mascot.convert("RGBA").resize((920, 920), LANCZOS),
-                                     (200, 559))
-            centered_text(draw, (660, 947), "いま一緒", font("Bold", 104))
-            centered_text(draw, (660, 1098), "付き合って 365日目", font("Medium", 49))
-            captions = ((1600, "今月 8日 · 27時間40分"), (1830, "累計 382時間15分"))
+            centered_text(draw, (660, 750), "16:42:18", font("Bold", 195))
+            draw.rounded_rectangle((350, 925, 970, 1055), radius=64, fill="#FFFAFD")
+            centered_text(draw, (660, 990), "はるといっしょにいるよ", font("Bold", 48))
+            centered_text(draw, (660, 1123), "付き合って 259日目", font("Medium", 48))
+            mascot(base, (509, 1795), 417)
+            mascot(base, (792, 1874), 405, pink=True)
+            captions = ()
         elif index == 1:
             centered_text(draw, (660, 444), "2026年11月", font("Bold", 86))
+            draw.rounded_rectangle((390, 543, 930, 646), radius=50, fill="#F3EEFD")
+            centered_text(draw, (660, 594), "今月 75時間30分 · 14日", font("Bold", 46))
             for day, weekday in enumerate("日月火水木金土"):
-                centered_text(draw, (160 + day * 167, 660), weekday, font("Medium", 46))
+                centered_text(draw, (133 + day * 175, 763), weekday, font("Medium", 46))
+            for first, last in ((7, 9), (18, 19)):
+                x = 133 + first % 7 * 175
+                y = 910 + first // 7 * 179
+                draw.rounded_rectangle((x - 59, y - 59, x + (last - first) * 175 + 59,
+                                        y + 59), radius=59, fill="#F5C9DF")
             for day in range(30):
-                x, y = 160 + day % 7 * 167, 817 + day // 7 * 165
-                if day in (1, 4, 7, 12, 13, 16, 20, 21, 27):
+                x, y = 133 + day % 7 * 175, 910 + day // 7 * 179
+                if day in (1, 4, 12, 13, 16):
                     draw.ellipse((x - 58, y - 58, x + 58, y + 58), fill="#F5C9DF")
                 centered_text(draw, (x, y), str(day + 1), font("Bold", 53))
-            captions = ((1780, "今月 27時間40分 · 8日"), (2010, "ふたりの記念日"))
+            captions = ()
         elif index == 2:
             centered_text(draw, (660, 432), "3時間25分", font("Bold", 105))
             draw.rounded_rectangle((90, 572, 1230, 760), radius=54, fill="#FFFAFC")
@@ -466,7 +696,7 @@ def mock_screens(raw_dir):
             centered_text(draw, (738, 1306), "2時間10分", font("Bold", 65))
             centered_text(draw, (738, 1968), "1時間15分", font("Bold", 65))
             captions = ()
-        elif index == 3:
+        else:
             centered_text(draw, (660, 484), "相手を招待する", font("Bold", 83))
             draw.rounded_rectangle((279, 650, 1041, 1412), radius=67, fill="white")
             for row in range(29):
@@ -478,16 +708,12 @@ def mock_screens(raw_dir):
                 draw.rectangle((x, y, x + 139, y + 139), fill=INK)
                 draw.rectangle((x + 20, y + 20, x + 119, y + 119), fill="white")
                 draw.rectangle((x + 40, y + 40, x + 99, y + 99), fill=INK)
-            captions = ((1610, "相手のOurHoursで読み取る"), (1940, "招待リンクを共有"))
-        else:
-            captions = ((452, "ふたりのプロフィール"), (744, "自動記録"),
-                        (1036, "位置情報で精度を上げる"), (1328, "ふたりで同期"),
-                        (1620, "カレンダーの印"), (1912, "はじめかたを見る"))
+            captions = ((1470, "相手のOurHoursで読み取る"), (1700, "招待URLをコピー"))
 
         for y, caption in captions:
             draw.rounded_rectangle((93, y, 1227, y + 176), radius=58, fill="#FFFAFD")
             centered_text(draw, (660, y + 88), caption, font("Bold", 49))
-        base.convert("RGB").save(raw_dir / slide.raw)
+        base.convert("RGB").save(raw_dir / name)
 
 
 def self_test(out_dir):
@@ -495,26 +721,26 @@ def self_test(out_dir):
         raw_dir = Path(raw_dir)
         mock_screens(raw_dir)
         render(raw_dir, out_dir)
-    for slide in SLIDES:
-        path = out_dir / slide.output
+    for name in PANEL_NAMES:
+        path = out_dir / name
         assert path.is_file(), f"Missing {path}"
         with Image.open(path) as image:
             image.load()
             assert image.format == "PNG" and image.mode == "RGB" and image.size == SIZE, path
             assert "transparency" not in image.info, path
-    for name, count in (("preview_panorama_1_2_3.png", 3), ("preview_all_5.png", 5)):
+    for name, count, gap in ((PANORAMA_PREVIEW, 3, 0), (ALL_PREVIEW, 5, PREVIEW_GAP)):
         path = out_dir / name
         assert path.is_file(), f"Missing {path}"
         with Image.open(path) as image:
             image.load()
             assert image.format == "PNG" and image.mode == "RGB", path
-            assert image.size == (count * PREVIEW_SIZE[0] + (count + 1) * PREVIEW_GAP,
-                                  PREVIEW_SIZE[1] + 2 * PREVIEW_GAP), path
+            assert image.size == (count * PREVIEW_SIZE[0] + (count + 1) * gap,
+                                  PREVIEW_SIZE[1] + 2 * gap), path
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-dir", type=Path, help="directory containing the five simulator PNGs")
+    parser.add_argument("--raw-dir", type=Path, help="directory containing the four simulator PNGs")
     parser.add_argument("--out-dir", type=Path, help="directory for promotional screenshots and previews")
     parser.add_argument("--self-test", action="store_true", help="render and validate synthetic captures")
     args = parser.parse_args()

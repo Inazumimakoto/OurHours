@@ -80,7 +80,7 @@ enum ScreenshotDemo {
             userDefaults: defaults
         )
         if scene == .home {
-            let elapsedSeconds = 3 * 3600 + 24 * 60 + 18
+            let elapsedSeconds = 16 * 3600 + 42 * 60 + 18
             model.screenshotFixedActiveSessionStart = Date.now.addingTimeInterval(-TimeInterval(elapsedSeconds))
         }
         return model
@@ -92,19 +92,39 @@ enum ScreenshotDemo {
     }
 
     private static func seedHistory(in store: JournalStore, pairID: UUID) throws {
-        let sessions = [
-            (1, 12, 16), (2, 10, 17), (4, 18, 21), (5, 11, 16), (7, 13, 19),
-            (8, 10, 19), (10, 17, 20), (12, 12, 17), (14, 18, 20),
-            (17, 13, 17), (19, 11, 19), (20, 12, 18), (21, 16, 19)
-        ]
-        for (day, startHour, endHour) in sessions {
-            let end = date(day: day, hour: endHour, minute: day.isMultiple(of: 2) ? 30 : 0)
-            if end <= now {
-                try store.addManualRecord(pairID: pairID, startedAt: date(day: day, hour: startHour), endedAt: end)
-            }
+        let monthEnd = calendar.dateInterval(of: .month, for: demoMonthDate)!.end
+        let cutoff = min(monthEnd, calendar.startOfDay(for: now))
+        let lastDay = calendar.dateComponents([.day], from: demoMonthDate, to: cutoff).day!
+        var occupiedDays: Set<Int> = [15]
+
+        // Each window has room for its streak even when a Saturday splits the window.
+        // The demo month always has at least 19 completed days.
+        let streaks = [(3...7, 3, 18), (10...14, 2, 19), ((lastDay - 3)...lastDay, 2, 18)]
+        for (window, length, startHour) in streaks {
+            let firstDay = window.first { day in
+                let weekday = calendar.component(.weekday, from: date(day: day))
+                return day + length - 1 <= window.upperBound && weekday + length - 1 <= 7
+            }!
+            let endDay = firstDay + length - 1
+            try store.addManualRecord(pairID: pairID, startedAt: date(day: firstDay, hour: startHour),
+                                      endedAt: date(day: endDay, hour: startHour + 2))
+            occupiedDays.formUnion(firstDay...endDay)
         }
-        try store.addManualRecord(pairID: pairID, startedAt: date(day: 15, hour: 11, minute: 30),
-                                  endedAt: date(day: 15, hour: 14))
+
+        // Keep the café and birthday dates, then spread seven more visits across the month.
+        var singleDays = [2, 8]
+        let availableDays = (1...lastDay).filter { !occupiedDays.contains($0) && !singleDays.contains($0) }
+        for index in 0..<7 {
+            singleDays.append(availableDays[index * (availableDays.count - 1) / 6])
+        }
+        let durations = [4, 9, 3, 7, 5, 8, 4, 6, 3]
+        for (day, hours) in zip(singleDays, durations) {
+            let startHour = 10 + day % 4
+            try store.addManualRecord(pairID: pairID, startedAt: date(day: day, hour: startHour),
+                                      endedAt: date(day: day, hour: startHour + hours))
+        }
+        try store.addManualRecord(pairID: pairID, startedAt: date(day: 15, hour: 10, minute: 30),
+                                  endedAt: date(day: 15, hour: 14, minute: 30))
         try store.addManualRecord(pairID: pairID, startedAt: date(day: 15, hour: 16),
                                   endedAt: date(day: 15, hour: 20, minute: 30))
         for (day, memo) in [(2, "駅前のカフェで待ち合わせ。"), (8, "誕生日のケーキを一緒に選んだ。"),
