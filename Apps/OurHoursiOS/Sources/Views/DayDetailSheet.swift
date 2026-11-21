@@ -128,6 +128,7 @@ private struct TimelineLayoutPlan {
 struct DayDetailSheet: View {
     let date: Date
     let startAdding: Bool
+    let focusEncounterID: UUID?
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -146,15 +147,17 @@ struct DayDetailSheet: View {
     @State private var zoomFactor: Double = 1.0
     @State private var zoomFocusMinute: Double = 810.0
     @State private var didHandleInitialAdd = false
+    @State private var didHandleInitialFocus = false
 
     private let timelinePadTop: CGFloat = 22
     private let timelinePadBottom: CGFloat = 26
     private let unifiedAxisX: CGFloat = 56
     private let labelLeadX: CGFloat = 76
 
-    init(date: Date, startAdding: Bool = false) {
+    init(date: Date, startAdding: Bool = false, focusEncounterID: UUID? = nil) {
         self.date = date
         self.startAdding = startAdding
+        self.focusEncounterID = focusEncounterID
         _currentDate = State(initialValue: date)
     }
 
@@ -186,34 +189,8 @@ struct DayDetailSheet: View {
             ZStack(alignment: .bottom) {
                 FoamTheme.sky(together: model.isTogetherNow)
                     .ignoresSafeArea()
-                FoamAmbientBackgroundView(isTogether: model.isTogetherNow)
+                FoamAmbientBackgroundView(isTogether: model.isTogetherNow, softened: true)
                     .ignoresSafeArea()
-
-                VStack {
-                    HStack {
-                        Image("FoamCornerCluster")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 142)
-                            .opacity(0.88)
-                        Spacer()
-                    }
-                    Spacer()
-                }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .ignoresSafeArea(edges: [.top, .leading])
-
-                Image("FoamTabBarBase")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: screenGeo.size.width, height: 136, alignment: .top)
-                    .offset(y: 66)
-                    .opacity(0.56)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                    .ignoresSafeArea(edges: .bottom)
 
                 VStack(spacing: 0) {
                     topBar(currentDayKey: day.dayKey, day: day, dayStart: activeDayStart)
@@ -300,6 +277,14 @@ struct DayDetailSheet: View {
                 didHandleInitialAdd = true
                 Task { @MainActor in
                     openDraftEditor(day: day, dayStart: activeDayStart)
+                }
+            } else if let focusID = focusEncounterID, !didHandleInitialFocus {
+                didHandleInitialFocus = true
+                let targetID = "\(focusID.uuidString)_\(day.dayKey)"
+                if day.slices.contains(where: { $0.id == targetID }) {
+                    selectedItemID = targetID
+                } else if let fallback = day.slices.first(where: { $0.status == .unknownEnd }) {
+                    selectedItemID = fallback.id
                 }
             }
         }
@@ -493,34 +478,14 @@ struct DayDetailSheet: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .background {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.78))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.96), lineWidth: 1.2)
-                }
-                .shadow(color: FoamTheme.ink.opacity(0.06), radius: 10, y: 4)
-        }
-        .overlay(alignment: .topLeading) {
-            Image("FoamDayPuffA")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 32, height: 32)
-                .rotationEffect(.degrees(-14))
-                .offset(x: -10, y: -12)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            Image("FoamDayPuffB")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 24, height: 24)
-                .rotationEffect(.degrees(18))
-                .opacity(0.92)
-                .offset(x: 9, y: 10)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            SoapBubbleSurface(
+                cornerStyle: .roundedRect(22),
+                prominence: .standard,
+                isTogether: model.isTogetherNow,
+                seed: 5.2,
+                wobbleScale: 0.35,
+                animated: false
+            )
         }
         .animation(.spring(response: 0.26, dampingFraction: 0.8), value: normalizedMemo != lastSyncedMemo)
     }
@@ -2273,23 +2238,35 @@ private struct TimelineSoapStem: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                .white,
-                                Color(red: 0.96, green: 0.97, blue: 0.99),
-                                Color(red: 0.89, green: 0.91, blue: 0.96)
+                                Color.white.opacity(0.82),
+                                Color(red: 0.94, green: 0.97, blue: 1.0).opacity(0.68),
+                                Color(red: 1.0, green: 0.93, blue: 0.97).opacity(0.72)
                             ],
-                            startPoint: .leading,
-                            endPoint: .trailing
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
                     )
                     .frame(width: barWidth, height: height)
                     .overlay {
                         Capsule()
                             .strokeBorder(
-                                isSelected ? FoamTheme.ink.opacity(0.28) : Color.white.opacity(0.98),
-                                lineWidth: isSelected ? 1.4 : 1.1
+                                isSelected
+                                    ? AnyShapeStyle(FoamTheme.ink.opacity(0.32))
+                                    : AnyShapeStyle(
+                                        LinearGradient(
+                                            colors: [
+                                                Color.white.opacity(0.94),
+                                                Color(red: 0.72, green: 0.92, blue: 1.0, opacity: 0.72),
+                                                Color(red: 1.0, green: 0.82, blue: 0.92, opacity: 0.72)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    ),
+                                lineWidth: isSelected ? 1.5 : 1.2
                             )
                     }
-                    .shadow(color: FoamTheme.ink.opacity(isSelected ? 0.16 : 0.11), radius: isSelected ? 6 : 4, y: 2)
+                    .shadow(color: FoamTheme.ink.opacity(isSelected ? 0.14 : 0.08), radius: isSelected ? 6 : 4, y: 2)
                     .scaleEffect(x: pulse, y: 1.0)
             }
         }

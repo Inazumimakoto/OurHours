@@ -300,4 +300,66 @@ struct CalendarAggregatorTests {
         #expect(unknownResolved[1].endedAt == s1.endedAt)
         #expect(Set(unknownResolved[1].linkedSessionIDs) == [uBeforeS1.id, s1.id])
     }
+
+    @Test func coalescedActiveSessionStartChainsShortGapsAndIsolatesPairs() throws {
+        let base = try date("2026-11-21T10:00:00+09:00")
+        let sFar = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(-3_600), // 09:00-09:44 (16m before s1 -> stays unmerged)
+            endedAt: base.addingTimeInterval(-960),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let s1 = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base, // 10:00-10:30
+            endedAt: base.addingTimeInterval(1_800),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let s2 = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(2_280), // +8m -> 10:38-11:00
+            endedAt: base.addingTimeInterval(3_600),
+            status: .completed, connectionPath: .autoReconnect, startRole: .peripheral
+        )
+        let active = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(4_080), // +8m -> 11:08 active
+            endedAt: nil,
+            status: .active, connectionPath: .autoReconnect, startRole: .central
+        )
+
+        let otherPairID = UUID()
+        let otherPairSession = EncounterSession(
+            id: UUID(), pairID: otherPairID,
+            startedAt: base.addingTimeInterval(-1_800), // 09:30-10:55, different pair
+            endedAt: base.addingTimeInterval(3_300),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+
+        let mergedStart = EncounterCalendarAggregator.coalescedActiveSessionStart(
+            autoSessions: [sFar, s1, s2, active, otherPairSession],
+            journal: JournalSnapshot()
+        )
+        #expect(mergedStart == s1.startedAt)
+
+        // Deleted override on s2 breaks the bridge back to s1
+        let deletedBridge = JournalSnapshot(
+            sessionOverrides: [
+                s2.id: SessionOverride(sessionID: s2.id, action: .deleted, updatedAt: base)
+            ]
+        )
+        let afterDelete = EncounterCalendarAggregator.coalescedActiveSessionStart(
+            autoSessions: [sFar, s1, s2, active],
+            journal: deletedBridge
+        )
+        #expect(afterDelete == active.startedAt)
+
+        // No active session -> nil
+        #expect(
+            EncounterCalendarAggregator.coalescedActiveSessionStart(
+                autoSessions: [sFar, s1, s2],
+                journal: JournalSnapshot()
+            ) == nil
+        )
+    }
 }

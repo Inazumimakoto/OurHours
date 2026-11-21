@@ -96,8 +96,15 @@ final class AppModel {
 
     var isAutoRecordingEnabled: Bool { snapshot.isAutoRecordingEnabled }
 
-    var isTogetherNow: Bool { snapshot.activeSession != nil }
-    var activeSessionStartDate: Date? { snapshot.activeSession?.startedAt }
+    var isTogetherNow: Bool { activeSessionStartDate != nil }
+    var activeSessionStartDate: Date? {
+        EncounterCalendarAggregator.coalescedActiveSessionStart(
+            autoSessions: snapshot.sessions,
+            peerSessions: activePairPeerSessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
+    }
 
     private var activePairPeerSessions: [SyncedPeerSession] {
         guard let pairID = snapshot.pairConfiguration?.pairID else { return [] }

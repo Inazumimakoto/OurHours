@@ -37,7 +37,7 @@ private struct FoamCharacter: View {
                 let wave = sin(t * (index == 0 ? 1.15 : 0.98) + Double(index))
                 let blink = (t + Double(index)).truncatingRemainder(dividingBy: 4.7) < 0.13
                 ZStack {
-                    Image("FoamMascotBall").resizable().scaledToFit()
+                    Image("BubbleMascot").resizable().scaledToFit()
                     Canvas { context, _ in
                         for x in [37.0, 91.0] {
                             let blush = Path(ellipseIn: CGRect(x: x - 12, y: 64, width: 24, height: 15))
@@ -64,6 +64,6 @@ private struct FoamCharacter: View {
             SpringKeyframe(0.86, duration: 0.12)
             SpringKeyframe(1, duration: 0.45, spring: .bouncy)
         }
-        .accessibilityLabel("泡のキャラクター").accessibilityHint("タップすると泡がはじけます")
+        .accessibilityLabel("シャボン玉のキャラクター").accessibilityHint("タップするとシャボン玉がはじけます")
     }
 }

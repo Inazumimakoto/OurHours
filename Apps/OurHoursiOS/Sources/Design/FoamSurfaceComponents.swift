@@ -11,12 +11,14 @@ struct FoamRoundIconButton<Icon: View>: View {
             UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             action()
         } label: {
-            Image("FoamSettingsLather")
-                .resizable()
-                .scaledToFit()
-                .frame(width: size, height: size)
-                .shadow(color: FoamTheme.ink.opacity(0.08), radius: 5, y: 2)
-                .overlay { icon() }
+            SoapBubbleSurface(
+                cornerStyle: .capsule,
+                prominence: .standard,
+                seed: 2.7,
+                wobbleScale: 0.85
+            )
+            .frame(width: size, height: size)
+            .overlay { icon() }
         }
         .buttonStyle(FoamRoundBounceButtonStyle())
         .accessibilityLabel(accessibilityLabel)
@@ -40,13 +42,13 @@ struct FoamSoftCard<Content: View>: View {
         content()
             .padding(padding)
             .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.84))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.96), lineWidth: 1.5)
-                    }
-                    .shadow(color: FoamTheme.ink.opacity(0.07), radius: 10, y: 4)
+                SoapBubbleSurface(
+                    cornerStyle: .roundedRect(cornerRadius),
+                    prominence: .standard,
+                    seed: 4.2,
+                    wobbleScale: 0.35,
+                    animated: false
+                )
             }
     }
 }

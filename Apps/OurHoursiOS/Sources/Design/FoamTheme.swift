@@ -54,23 +54,21 @@ enum FoamTheme {
     }
 }
 
-/// Continuous whipped soap-lather cloud pillow (no glass, no rectangular border, no hollow bubble gaps).
+/// Continuous pastel soap-bubble surface framing content cleanly without rectangular distortion.
 struct FoamCloudSurface: View {
     var isTogether: Bool = false
     var compact: Bool = false
+    var wobble: Bool = true
 
     var body: some View {
-        Image(compact ? "FoamPillLather" : "FoamCardLather")
-            .resizable()
-            .padding(.horizontal, compact ? -14 : -18)
-            .padding(.vertical, compact ? -10 : -14)
-            .shadow(
-                color: isTogether ? FoamTheme.warmAccent.opacity(0.10) : FoamTheme.ink.opacity(0.08),
-                radius: compact ? 6 : 9,
-                y: compact ? 3 : 4
-            )
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        SoapBubbleSurface(
+            cornerStyle: compact ? .capsule : .roundedRect(24),
+            prominence: .standard,
+            isTogether: isTogether,
+            seed: compact ? 1.1 : 2.3,
+            wobbleScale: wobble ? (compact ? 0.90 : 0.55) : 0,
+            animated: wobble
+        )
     }
 }
 
@@ -89,10 +87,10 @@ extension View {
             .background { FoamCloudSurface(isTogether: isTogether, compact: compact) }
     }
 
-    func foamButtonSurface() -> some View {
+    func foamButtonSurface(wobble: Bool = true) -> some View {
         padding(.horizontal, 20)
             .padding(.vertical, 10)
-            .background { FoamCloudSurface(isTogether: false, compact: true) }
+            .background { FoamCloudSurface(isTogether: false, compact: true, wobble: wobble) }
             .buttonStyle(FoamPressButtonStyle())
     }
 }

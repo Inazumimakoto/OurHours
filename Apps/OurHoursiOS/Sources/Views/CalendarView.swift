@@ -1,16 +1,18 @@
 import OurHoursCore
 import SwiftUI
 
-private struct SelectedDayRoute: Identifiable {
+struct SelectedDayRoute: Identifiable, Equatable {
     let id = UUID()
     let date: Date
     let startAdding: Bool
+    var focusEncounterID: UUID? = nil
 }
 
 struct CalendarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var displayedMonth: Date
+    @Binding var pendingRoute: SelectedDayRoute?
 
     @State private var selectedRoute: SelectedDayRoute?
     @State private var gridWidth: CGFloat = 340
@@ -59,12 +61,15 @@ struct CalendarView: View {
                         let targetDate = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month) ? .now : currentFirst
                         selectedRoute = SelectedDayRoute(date: targetDate, startAdding: true)
                     } label: {
-                        Image("FoamSettingsLather")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 48, height: 48)
-                            .shadow(color: FoamTheme.ink.opacity(0.08), radius: 5, y: 2)
-                            .overlay { FoamPlusIcon() }
+                        SoapBubbleSurface(
+                            cornerStyle: .capsule,
+                            prominence: .standard,
+                            isTogether: model.isTogetherNow,
+                            seed: 1.9,
+                            wobbleScale: 0.85
+                        )
+                        .frame(width: 44, height: 44)
+                        .overlay { FoamPlusIcon() }
                     }
                     .buttonStyle(CalendarBounceButtonStyle())
                     .accessibilityLabel("記録を追加")
@@ -161,10 +166,22 @@ struct CalendarView: View {
         }
         .padding(.top, 62)
         .buttonStyle(.plain)
+        .onAppear { consumePendingRouteIfNeeded() }
+        .onChange(of: pendingRoute) { _, _ in consumePendingRouteIfNeeded() }
         .onDisappear { transitionTask?.cancel() }
         .fullScreenCover(item: $selectedRoute) { route in
-            DayDetailSheet(date: route.date, startAdding: route.startAdding)
+            DayDetailSheet(
+                date: route.date,
+                startAdding: route.startAdding,
+                focusEncounterID: route.focusEncounterID
+            )
         }
+    }
+
+    private func consumePendingRouteIfNeeded() {
+        guard let route = pendingRoute else { return }
+        pendingRoute = nil
+        selectedRoute = route
     }
 
     private func monthButton(_ direction: Int) -> some View {
@@ -173,12 +190,15 @@ struct CalendarView: View {
             guard !isAnimatingCommit else { return }
             commitMonthTransition(direction: direction, currentFirst: currentFirst)
         } label: {
-            Image("FoamSettingsLather")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 44, height: 44)
-                .shadow(color: FoamTheme.ink.opacity(0.08), radius: 4, y: 2)
-                .overlay { FoamChevronIcon(direction: direction) }
+            SoapBubbleSurface(
+                cornerStyle: .capsule,
+                prominence: .standard,
+                isTogether: model.isTogetherNow,
+                seed: direction < 0 ? 4.1 : 5.3,
+                wobbleScale: 0.85
+            )
+            .frame(width: 42, height: 42)
+            .overlay { FoamChevronIcon(direction: direction) }
         }
         .buttonStyle(CalendarBounceButtonStyle())
         .accessibilityLabel(direction < 0 ? "前の月" : "次の月")
@@ -232,6 +252,13 @@ struct CalendarView: View {
     }
 }
 
+private enum CalendarDayBubbleRender: Equatable {
+    case none
+    case standalone(diameter: CGFloat, intensity: BubbleIntensity)
+    case runStart(span: Int, hasActiveSession: Bool)
+    case runContinuation
+}
+
 private struct CalendarMonthPageView: View {
     @Environment(AppModel.self) private var model
     let monthFirst: Date
@@ -256,39 +283,49 @@ private struct CalendarMonthPageView: View {
         let colWidth = max(40, gridWidth / 7)
 
         ZStack(alignment: .top) {
-            // Layer 1: Organic white soap-foam puffs & overnight bridges locked directly to dates
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(0..<7, id: \.self) { _ in
-                    Color.clear.frame(height: 20)
-                }
-                ForEach(0..<leadingBlanks, id: \.self) { _ in
-                    Color.clear.frame(height: 52)
-                }
-                ForEach(1...max(1, daysCount), id: \.self) { day in
-                    if let date = calendar.date(byAdding: .day, value: day - 1, to: monthFirst) {
-                        let summary = summaries[EncounterCalendarAggregator.dayKey(for: date)]
+            // Layer 1: Single shared-timer glossy soap-bubble layer for crisp met days & rounded overnight capsules
+            TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: reduceMotion || !bubblesRevealed || summaries.isEmpty)) { timeline in
+                let sharedPhase = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate * 1.15
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(0..<7, id: \.self) { _ in
+                        Color.clear.frame(height: 20)
+                    }
+                    ForEach(0..<leadingBlanks, id: \.self) { _ in
+                        Color.clear.frame(height: 52)
+                    }
+                    ForEach(1...max(1, daysCount), id: \.self) { day in
                         let gridIndex = leadingBlanks + (day - 1)
                         let col = gridIndex % 7
                         let row = gridIndex / 7
+                        let summary = summaryForDay(day, daysCount: daysCount, summaries: summaries)
+                        let layout = bubbleLayout(
+                            for: day,
+                            col: col,
+                            leadingBlanks: leadingBlanks,
+                            daysCount: daysCount,
+                            summaries: summaries
+                        )
                         CalendarDayFoamLayer(
                             year: year,
                             month: month,
                             day: day,
                             col: col,
                             row: row,
-                            daysCount: daysCount,
                             colWidth: colWidth,
                             summary: summary,
+                            bubbleRender: layout.render,
+                            hasLeadingWrapDot: layout.hasLeadingWrapDot,
+                            hasTrailingWrapDot: layout.hasTrailingWrapDot,
                             bubblesRevealed: bubblesRevealed,
                             monthEpoch: monthEpoch,
                             transitionDirection: transitionDirection,
+                            isTogether: model.isTogetherNow,
+                            sharedPhase: sharedPhase,
                             reduceMotion: reduceMotion
                         )
                     }
                 }
             }
-            .compositingGroup()
-            .shadow(color: FoamTheme.ink.opacity(0.08), radius: 5, y: 2)
             .allowsHitTesting(false)
 
             // Layer 2: Weekday headers, day numerals, badges, and tap buttons
@@ -326,6 +363,73 @@ private struct CalendarMonthPageView: View {
             }
         }
     }
+
+    private func summaryForDay(_ day: Int, daysCount: Int, summaries: [String: DaySummary]) -> DaySummary? {
+        guard day >= 1, day <= daysCount,
+              let date = calendar.date(byAdding: .day, value: day - 1, to: monthFirst) else {
+            return nil
+        }
+        return summaries[EncounterCalendarAggregator.dayKey(for: date)]
+    }
+
+    private func isConnectedToNext(
+        day: Int,
+        leadingBlanks: Int,
+        daysCount: Int,
+        summaries: [String: DaySummary]
+    ) -> Bool {
+        guard day >= 1, day < daysCount else { return false }
+        let col = (leadingBlanks + day - 1) % 7
+        guard col < 6 else { return false }
+        guard let current = summaryForDay(day, daysCount: daysCount, summaries: summaries),
+              let next = summaryForDay(day + 1, daysCount: daysCount, summaries: summaries) else {
+            return false
+        }
+        return current.bubbleIntensity != .none
+            && next.bubbleIntensity != .none
+            && current.continuesToNextDay
+            && next.continuesFromPreviousDay
+    }
+
+    private func bubbleLayout(
+        for day: Int,
+        col: Int,
+        leadingBlanks: Int,
+        daysCount: Int,
+        summaries: [String: DaySummary]
+    ) -> (render: CalendarDayBubbleRender, hasLeadingWrapDot: Bool, hasTrailingWrapDot: Bool) {
+        let summary = summaryForDay(day, daysCount: daysCount, summaries: summaries)
+        let intensity = summary?.bubbleIntensity ?? .none
+        let hasLeadingWrapDot = intensity != .none && summary?.continuesFromPreviousDay == true && (col == 0 || day == 1)
+        let hasTrailingWrapDot = intensity != .none && summary?.continuesToNextDay == true && (col == 6 || day == daysCount)
+
+        if day > 1 && isConnectedToNext(day: day - 1, leadingBlanks: leadingBlanks, daysCount: daysCount, summaries: summaries) {
+            return (.runContinuation, hasLeadingWrapDot, hasTrailingWrapDot)
+        }
+
+        if isConnectedToNext(day: day, leadingBlanks: leadingBlanks, daysCount: daysCount, summaries: summaries) {
+            var endDay = day
+            var anyActive = summary?.hasActiveSession == true
+            while isConnectedToNext(day: endDay, leadingBlanks: leadingBlanks, daysCount: daysCount, summaries: summaries) {
+                endDay += 1
+                if summaryForDay(endDay, daysCount: daysCount, summaries: summaries)?.hasActiveSession == true {
+                    anyActive = true
+                }
+            }
+            return (.runStart(span: endDay - day + 1, hasActiveSession: anyActive), hasLeadingWrapDot, hasTrailingWrapDot)
+        }
+
+        guard intensity != .none else {
+            return (.none, false, false)
+        }
+        let diameter: CGFloat = switch intensity {
+        case .none: 0
+        case .small: 38
+        case .medium: 44
+        case .large: 49
+        }
+        return (.standalone(diameter: diameter, intensity: intensity), hasLeadingWrapDot, hasTrailingWrapDot)
+    }
 }
 
 private struct CalendarDayFoamLayer: View {
@@ -334,28 +438,17 @@ private struct CalendarDayFoamLayer: View {
     let day: Int
     let col: Int
     let row: Int
-    let daysCount: Int
     let colWidth: CGFloat
     let summary: DaySummary?
+    let bubbleRender: CalendarDayBubbleRender
+    let hasLeadingWrapDot: Bool
+    let hasTrailingWrapDot: Bool
     let bubblesRevealed: Bool
     let monthEpoch: Int
     let transitionDirection: Int
+    let isTogether: Bool
+    let sharedPhase: Double
     let reduceMotion: Bool
-
-    private var puffAssetName: String {
-        let names = ["FoamDayPuffA", "FoamDayPuffB", "FoamDayPuffC"]
-        let hash = abs(year &* 37 &+ month &* 13 &+ day &* 19)
-        return names[hash % names.count]
-    }
-
-    private var puffRotationDegrees: Double {
-        let hash = ((year &* 53 &+ month &* 29 &+ day &* 17) % 37) - 18
-        return Double(hash)
-    }
-
-    private var puffFlipX: CGFloat {
-        ((year + month * 3 + day * 5) % 2 == 0) ? 1 : -1
-    }
 
     private var popDelay: Double {
         let sweepColumn = transitionDirection >= 0 ? (6 - col) : col
@@ -365,58 +458,79 @@ private struct CalendarDayFoamLayer: View {
 
     var body: some View {
         let intensity = summary?.bubbleIntensity ?? .none
+        let isActivePulse = switch bubbleRender {
+        case let .runStart(_, hasActive): hasActive
+        default: summary?.hasActiveSession == true
+        }
+        let activePulse: CGFloat = (!reduceMotion && isActivePulse)
+            ? 1 + CGFloat(sin(sharedPhase * 3.1)) * 0.055
+            : 1
+
         ZStack {
-            if intensity != .none, let summary {
-                let diameter: CGFloat = switch intensity {
-                case .none: 0
-                case .small: 42
-                case .medium: 48
-                case .large: 54
+            if intensity != .none {
+                switch bubbleRender {
+                case .none, .runContinuation:
+                    EmptyView()
+
+                case let .standalone(diameter, bubbleIntensity):
+                    SoapBubbleSurface(
+                        cornerStyle: .capsule,
+                        prominence: .vivid,
+                        isTogether: isTogether,
+                        seed: Double(day) * 0.73 + Double(month),
+                        wobbleScale: bubbleIntensity == .large ? 1.15 : 0.95,
+                        externalPhase: sharedPhase
+                    )
+                    .frame(width: diameter, height: diameter)
+                    .shadow(
+                        color: bubbleIntensity == .small
+                            ? .clear
+                            : FoamTheme.cream.opacity(bubbleIntensity == .large ? 0.90 : 0.50),
+                        radius: bubbleIntensity == .large ? 8 : 4
+                    )
+                    .scaleEffect(activePulse)
+
+                case let .runStart(span, _):
+                    let pillHeight: CGFloat = 44
+                    let pillWidth = colWidth * CGFloat(span - 1) + pillHeight
+                    SoapBubbleSurface(
+                        cornerStyle: .capsule,
+                        prominence: .vivid,
+                        isTogether: isTogether,
+                        seed: Double(day) * 0.61 + Double(month),
+                        wobbleScale: 1.05,
+                        externalPhase: sharedPhase
+                    )
+                    .frame(width: pillWidth, height: pillHeight)
+                    .shadow(color: FoamTheme.cream.opacity(0.65), radius: 5)
+                    .scaleEffect(activePulse)
+                    .offset(x: colWidth * CGFloat(span - 1) * 0.5)
                 }
 
-                if summary.continuesFromPreviousDay && (col == 0 || day == 1) {
-                    HStack(spacing: 2) {
-                        Image("FoamSudDrop").resizable().frame(width: 6, height: 6).offset(y: -3)
-                        Image("FoamDayBridge")
-                            .resizable()
-                            .frame(width: colWidth * 0.44, height: 22)
-                            .scaleEffect(x: -1, y: 1)
-                    }
-                    .offset(x: -colWidth * 0.34)
+                if hasLeadingWrapDot {
+                    SoapBubbleSurface(
+                        cornerStyle: .capsule,
+                        prominence: .vivid,
+                        isTogether: isTogether,
+                        seed: Double(day),
+                        wobbleScale: 0.4,
+                        externalPhase: sharedPhase
+                    )
+                    .frame(width: 10, height: 10)
+                    .offset(x: -colWidth * 0.44, y: -2)
                 }
 
-                if summary.continuesToNextDay {
-                    if col < 6 && day < daysCount {
-                        Image("FoamDayBridge")
-                            .resizable()
-                            .frame(width: colWidth * 0.96, height: 34)
-                            .offset(x: colWidth * 0.50)
-                    } else {
-                        HStack(spacing: 2) {
-                            Image("FoamDayBridge")
-                                .resizable()
-                                .frame(width: colWidth * 0.44, height: 22)
-                            Image("FoamSudDrop").resizable().frame(width: 6, height: 6).offset(y: -4)
-                        }
-                        .offset(x: colWidth * 0.34)
-                    }
-                }
-
-                TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion || !summary.hasActiveSession)) { tick in
-                    let activePulse: CGFloat = summary.hasActiveSession
-                        ? 1 + CGFloat(sin(tick.date.timeIntervalSinceReferenceDate * 3)) * 0.055
-                        : 1
-                    Image(puffAssetName)
-                        .resizable()
-                        .scaledToFit()
-                        .scaleEffect(x: puffFlipX, y: 1)
-                        .rotationEffect(.degrees(puffRotationDegrees))
-                        .frame(width: diameter, height: diameter)
-                        .shadow(
-                            color: intensity == .small ? .clear : FoamTheme.cream,
-                            radius: intensity == .large ? 7 : 3
-                        )
-                        .scaleEffect(activePulse)
+                if hasTrailingWrapDot {
+                    SoapBubbleSurface(
+                        cornerStyle: .capsule,
+                        prominence: .vivid,
+                        isTogether: isTogether,
+                        seed: Double(day) + 0.5,
+                        wobbleScale: 0.4,
+                        externalPhase: sharedPhase
+                    )
+                    .frame(width: 10, height: 10)
+                    .offset(x: colWidth * 0.44, y: -2)
                 }
             }
         }
@@ -439,10 +553,11 @@ private struct CalendarDayLabelCell: View {
     let summary: DaySummary?
 
     var body: some View {
+        let hasRecord = (summary?.bubbleIntensity ?? .none) != .none
         ZStack {
             Text("\(day)")
-                .font(FoamFont.bold(16, relativeTo: .headline))
-                .foregroundStyle(FoamTheme.ink)
+                .font(hasRecord ? FoamFont.bold(16.5, relativeTo: .headline) : FoamFont.regular(15, relativeTo: .headline))
+                .foregroundStyle(hasRecord ? FoamTheme.ink : FoamTheme.ink.opacity(0.30))
             if summary?.hasUnknownEnd == true {
                 Circle()
                     .fill(Color.orange)

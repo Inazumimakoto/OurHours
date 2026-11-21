@@ -1,43 +1,160 @@
+import OurHoursCore
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var showPairing = false
     @State private var confirmUnpair = false
     @State private var confirmClear = false
 
+    private var appVersionLabel: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "\(short) (\(build))"
+    }
+
     var body: some View {
         let state = model.snapshot
-        Form {
-            Section {
-                Toggle("自動記録", isOn: Binding(
-                    get: { model.isAutoRecordingEnabled }, set: { model.setAutoRecordingEnabled($0) }
-                ))
-            } header: {
-                Text("記録").font(FoamFont.bold(13, relativeTo: .footnote))
-            }
-            Section {
-                LabeledContent("同期状態") {
-                    Text(model.historySyncStatusText)
-                        .font(FoamFont.medium(13, relativeTo: .caption))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
+        ZStack {
+            FoamTheme.sky(together: model.isTogetherNow)
+                .ignoresSafeArea()
+            FoamAmbientBackgroundView(isTogether: model.isTogetherNow, softened: true)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                topBar
+                    .padding(.horizontal, 18)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+
+                ScrollView {
+                    VStack(spacing: 16) {
+                        releasePairingSection
+                        releaseRecordingAndSyncSection(state: state)
+                        releaseVersionRow
+                        if state.isPaired {
+                            Button("ペア連携を解除（機種変更・再設定）", role: .destructive) {
+                                confirmUnpair = true
+                            }
+                            .font(FoamFont.medium(12.5, relativeTo: .caption))
+                            .foregroundStyle(Color.red.opacity(0.65))
+                            .padding(.top, 2)
+                            .padding(.bottom, 4)
+                            .confirmationDialog("ペア連携を解除しますか？", isPresented: $confirmUnpair, titleVisibility: .visible) {
+                                Button("解除する", role: .destructive) { model.unpair() }
+                                Button("キャンセル", role: .cancel) {}
+                            } message: {
+                                Text("この端末での今後の認証と自動記録を直ちに停止します。双方の端末に保存済みのログは残ります。機種変更時は新しいiPhoneで新規の招待を作り、相手と再設定してください。再設定後、旧端末の鍵では認証できません。")
+                            }
+                        }
+                        debugSection(state: state)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 6)
+                    .padding(.bottom, 34)
                 }
-                LabeledContent("相手のBLE記録", value: "\(model.syncedPeerSessionCount)件")
-                Button("今すぐ記録・メモを同期") {
-                    Task { await model.syncSharedHistoryNow() }
-                }
-                .font(FoamFont.bold(15))
-                .disabled(model.isHistorySyncing || !model.snapshot.isPaired)
-                Text("片方しか検知できなかった BLE 記録・終了不明の自動補完・手動編集・一言メモを、ペアの共有鍵で E2EE 暗号化して CloudKit 経由で同期します。")
-                    .font(FoamFont.regular(12.5, relativeTo: .footnote))
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("ふたりで記録・メモを同期（CloudKit）").font(FoamFont.bold(13, relativeTo: .footnote))
             }
-            Section {
-                Toggle("位置情報で取りこぼしを補完", isOn: Binding(
+        }
+        .font(FoamFont.medium(16))
+        .foregroundStyle(FoamTheme.ink)
+        .preferredColorScheme(.light)
+        .toolbar(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showPairing) { PairingView() }
+    }
+
+    // MARK: - Top Navigation
+
+    private var topBar: some View {
+        ZStack {
+            Text("設定")
+                .font(FoamFont.bold(20, relativeTo: .title3))
+                .foregroundStyle(FoamTheme.ink)
+            HStack {
+                Spacer()
+                FoamRoundIconButton(size: 40, accessibilityLabel: "閉じる") {
+                    dismiss()
+                } icon: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(FoamTheme.ink.opacity(0.82))
+                }
+            }
+        }
+    }
+
+    // MARK: - Region 1: Release Settings UI
+
+    private var releasePairingSection: some View {
+        ReleaseBubbleCard(title: "ペア", isTogether: model.isTogetherNow, seed: 1.4) {
+            if let pair = model.snapshot.pairConfiguration {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .center, spacing: 10) {
+                        Text(model.isTogetherNow ? "いま一緒にいるよ" : "ペア連携中")
+                            .font(FoamFont.bold(12.5, relativeTo: .caption))
+                            .foregroundStyle(model.isTogetherNow ? FoamTheme.warmAccent : FoamTheme.ink)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule()
+                                    .fill(model.isTogetherNow ? FoamTheme.cream.opacity(0.92) : Color.white.opacity(0.68))
+                            )
+                        Spacer(minLength: 8)
+                        Text("累計 \(FoamTheme.duration(model.lifetimeRecordedSeconds()))")
+                            .font(FoamFont.bold(14, relativeTo: .subheadline))
+                            .foregroundStyle(FoamTheme.ink)
+                    }
+
+                    Text("\(pair.createdAt.formatted(date: .long, time: .omitted)) から記録中")
+                        .font(FoamFont.regular(12.5, relativeTo: .caption))
+                        .foregroundStyle(FoamTheme.ink.opacity(0.64))
+
+                    if pair.localRole == .partnerA {
+                        Button("招待QRコードを表示") { showPairing = true }
+                            .font(FoamFont.bold(15, relativeTo: .subheadline))
+                            .foregroundStyle(FoamTheme.ink)
+                            .foamButtonSurface()
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("パートナーとペア設定すると、一緒にいた時間を自動で残せます")
+                        .font(FoamFont.regular(13.5, relativeTo: .footnote))
+                        .foregroundStyle(FoamTheme.ink.opacity(0.74))
+                    Button("ペアを設定する") { showPairing = true }
+                        .font(FoamFont.bold(15, relativeTo: .subheadline))
+                        .foregroundStyle(FoamTheme.ink)
+                        .foamButtonSurface()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func releaseRecordingAndSyncSection(state: EngineSnapshot) -> some View {
+        let isAnySyncing = model.isHistorySyncing || model.isLocationSyncing
+
+        ReleaseBubbleCard(title: "自動記録と同期", isTogether: model.isTogetherNow, seed: 2.8) {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle(isOn: Binding(
+                    get: { model.isAutoRecordingEnabled },
+                    set: { model.setAutoRecordingEnabled($0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("自動記録")
+                            .font(FoamFont.bold(15.5, relativeTo: .body))
+                        Text("近くにいる時間を自動で記録します")
+                            .font(FoamFont.regular(12.5, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.64))
+                    }
+                }
+                .toggleStyle(SoapBubbleToggleStyle(isTogether: model.isTogetherNow, seed: 1.3))
+
+                Divider().overlay(FoamTheme.ink.opacity(0.08))
+
+                Toggle(isOn: Binding(
                     get: { model.locationMonitor.isEnabled },
                     set: { enabled in
                         if enabled {
@@ -47,116 +164,327 @@ struct SettingsView: View {
                             model.locationMonitor.disable()
                         }
                     }
-                ))
-                LabeledContent("取得状態") {
-                    Text(model.locationMonitor.statusDescription)
-                        .font(FoamFont.medium(13, relativeTo: .caption))
-                        .foregroundStyle(model.locationMonitor.isReducedAccuracyWarning ? .orange : .secondary)
-                        .multilineTextAlignment(.trailing)
-                }
-                if let lastCapture = model.locationMonitor.lastCaptureDate {
-                    LabeledContent("直近の位置取得", value: lastCapture.formatted())
-                }
-                LabeledContent("CloudKit 同期") {
-                    Text(model.locationSyncStatusText)
-                        .font(FoamFont.medium(13, relativeTo: .caption))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("位置補完で一致", value: "\(model.locationMatchedSessions.count)件")
-                Button("今すぐ位置情報を同期・突き合わせ") {
-                    Task { await model.syncLocationNow(requestFreshFix: true) }
-                }
-                .font(FoamFont.bold(15))
-                .disabled(model.isLocationSyncing || !model.snapshot.isPaired || !model.locationMonitor.isEnabled)
-                Text("ペアの共有鍵で暗号化した滞在ログだけを CloudKit 経由で突き合わせ、Bluetooth が切れた時間帯を自動補完します。地図や座標の画面共有は行わず、生の座標は 14 日で自動削除されます。")
-                    .font(FoamFont.regular(12.5, relativeTo: .footnote))
-                    .foregroundStyle(.secondary)
-                if model.locationMonitor.needsSettingsGuidance {
-                    Button("設定で「常に」＋「正確な位置情報オン」を確認") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            openURL(url)
-                        }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("位置情報で精度を上げる")
+                            .font(FoamFont.bold(15.5, relativeTo: .body))
+                        Text("記録の取りこぼしを防ぎます")
+                            .font(FoamFont.regular(12.5, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.64))
                     }
-                    .font(FoamFont.bold(14))
                 }
-            } header: {
-                Text("位置情報による取りこぼし補完（正確な位置 × CloudKit）").font(FoamFont.bold(13, relativeTo: .footnote))
-            }
-            Section {
-                if let pair = model.snapshot.pairConfiguration {
-                    LabeledContent("ペアID", value: String(pair.pairID.uuidString.prefix(8)))
-                    LabeledContent("この端末の役割", value: pair.localRole.shortCode)
-                    LabeledContent("鍵の世代", value: String(pair.keyEpoch))
-                    LabeledContent("設定日時", value: pair.createdAt.formatted())
-                    if pair.localRole == .partnerA {
-                        Button("招待QRコードを表示") { showPairing = true }
-                            .font(FoamFont.bold(16))
-                    }
-                    Button("ペア連携を解除（機種変更・再設定）", role: .destructive) { confirmUnpair = true }
-                        .font(FoamFont.bold(16))
-                        .confirmationDialog("ペア連携を解除しますか？", isPresented: $confirmUnpair, titleVisibility: .visible) {
-                            Button("解除する", role: .destructive) { model.unpair() }
-                            Button("キャンセル", role: .cancel) {}
-                        } message: {
-                            Text("この端末での今後の認証と自動記録を直ちに停止します。双方の端末に保存済みのログは残ります。機種変更時は新しいiPhoneで新規の招待を作り、相手と再設定してください。再設定後、旧端末の鍵では認証できません。")
-                        }
-                } else {
-                    Text("未設定")
-                    Button("ペアを設定する") { showPairing = true }
-                        .font(FoamFont.bold(16))
-                }
-            } header: {
-                Text("ペア設定").font(FoamFont.bold(13, relativeTo: .footnote))
-            }
-            Section {
-                LabeledContent("Central", value: state.centralState)
-                LabeledContent("Peripheral", value: state.peripheralState)
-                HStack {
-                    StatusBadge(title: state.isScanning ? "探索中" : "探索停止", active: state.isScanning)
-                    StatusBadge(title: state.isAdvertising ? "広告中" : "広告停止", active: state.isAdvertising)
-                }
-                LabeledContent("認証済みリンク", value: String(state.activeLinkCount))
-                ForEach(state.activeLinksSummary, id: \.self) { Text($0).font(.caption.monospaced()) }
-                LabeledContent(state.activeSession == nil ? "直近の接続経路" : "接続経路") {
-                    if let path = state.activeSession?.connectionPath ?? state.lastConnectionPath {
-                        StatusBadge(title: path.rawValue, active: state.activeSession != nil)
-                    } else { Text("未接続") }
-                }
-                LabeledContent("最終認証", value: state.lastAuthDate?.formatted() ?? "未認証")
-                if let error = state.lastErrorMessage {
-                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                }
+                .toggleStyle(SoapBubbleToggleStyle(isTogether: model.isTogetherNow, seed: 2.9))
+
                 if state.centralState == "unauthorized" || state.peripheralState == "unauthorized" {
-                    Label("自動記録にはBluetoothの許可が必要です。", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Button("設定を開く") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            openURL(url)
+                    Divider().overlay(FoamTheme.ink.opacity(0.08))
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("自動記録にはBluetoothの許可が必要です", systemImage: "exclamationmark.triangle.fill")
+                            .font(FoamFont.bold(13, relativeTo: .caption))
+                            .foregroundStyle(.red)
+                        Button("設定を開く") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                openURL(url)
+                            }
+                        }
+                        .font(FoamFont.bold(14, relativeTo: .subheadline))
+                        .foregroundStyle(FoamTheme.ink)
+                        .foamButtonSurface()
+                    }
+                }
+
+                if model.locationMonitor.needsSettingsGuidance {
+                    Divider().overlay(FoamTheme.ink.opacity(0.08))
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("位置情報の許可を「常に」にすると精度が上がります", systemImage: "location.slash")
+                            .font(FoamFont.bold(13, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.warmAccent)
+                        Button("設定を開く") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                openURL(url)
+                            }
+                        }
+                        .font(FoamFont.bold(14, relativeTo: .subheadline))
+                        .foregroundStyle(FoamTheme.ink)
+                        .foamButtonSurface()
+                    }
+                }
+
+                Divider().overlay(FoamTheme.ink.opacity(0.08))
+
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("ふたりで同期")
+                            .font(FoamFont.bold(15.5, relativeTo: .body))
+                        Text(releaseSyncLabel(isPaired: state.isPaired, isAnySyncing: isAnySyncing))
+                            .font(FoamFont.regular(12.5, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.64))
+                    }
+                    Spacer(minLength: 8)
+                    Button("今すぐ同期") {
+                        Task {
+                            await model.syncSharedHistoryNow()
+                            if model.locationMonitor.isEnabled {
+                                await model.syncLocationNow(requestFreshFix: true)
+                            }
                         }
                     }
-                    .font(FoamFont.bold(16))
+                    .font(FoamFont.bold(14, relativeTo: .subheadline))
+                    .foregroundStyle(FoamTheme.ink)
+                    .foamButtonSurface(wobble: false)
+                    .disabled(isAnySyncing || !state.isPaired)
+                    .opacity((isAnySyncing || !state.isPaired) ? 0.5 : 1)
                 }
-            } header: {
-                Text("Bluetooth").font(FoamFont.bold(13, relativeTo: .footnote))
             }
-            Section {
-                NavigationLink("BLE 診断ログ・書き出し") { LogsView() }
-                Button("デバッグログを消去", role: .destructive) { confirmClear = true }
-                    .font(FoamFont.bold(16))
+        }
+    }
+
+    private func releaseSyncLabel(isPaired: Bool, isAnySyncing: Bool) -> String {
+        if isAnySyncing { return "同期中…" }
+        switch model.historySyncState {
+        case .idle:
+            return isPaired ? "記録やメモを揃えます" : "ペア設定後に使えます"
+        case .syncing:
+            return "同期中…"
+        case let .synced(date, _):
+            return "\(date.formatted(date: .omitted, time: .shortened)) に同期済み"
+        case .unavailable, .failed:
+            return "あとで自動で同期します"
+        }
+    }
+
+    private var releaseVersionRow: some View {
+        HStack {
+            Text("バージョン")
+                .font(FoamFont.medium(14, relativeTo: .subheadline))
+                .foregroundStyle(FoamTheme.ink.opacity(0.76))
+            Spacer()
+            Text(appVersionLabel)
+                .font(FoamFont.bold(14, relativeTo: .subheadline))
+                .foregroundStyle(FoamTheme.ink)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
+        .background {
+            SoapBubbleSurface(
+                cornerStyle: .roundedRect(20),
+                prominence: .standard,
+                isTogether: model.isTogetherNow,
+                seed: 4.1,
+                wobbleScale: 0.35,
+                animated: false
+            )
+        }
+    }
+
+    // MARK: - Region 2: Plain Debug Section (Unstyled Developer Controls)
+
+    @ViewBuilder
+    private func debugSection(state: EngineSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("DEBUG（開発・検証用）")
+                .font(.caption.monospaced().weight(.semibold))
+                .foregroundStyle(FoamTheme.ink.opacity(0.55))
+                .padding(.horizontal, 4)
+
+            VStack(alignment: .leading, spacing: 14) {
+                // 1. ペア内部情報
+                debugBlock(title: "ペア内部情報") {
+                    if let pair = state.pairConfiguration {
+                        debugRow("ペアID", value: String(pair.pairID.uuidString.prefix(8)))
+                        Divider()
+                        debugRow("この端末の役割", value: pair.localRole.shortCode)
+                        Divider()
+                        debugRow("鍵の世代", value: String(pair.keyEpoch))
+                        Divider()
+                        debugRow("設定日時", value: pair.createdAt.formatted())
+                    } else {
+                        Text("未設定")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // 2. 記録・メモ同期（CloudKit）
+                debugBlock(title: "記録・メモを同期（CloudKit）") {
+                    debugRow("同期状態", value: model.historySyncStatusText)
+                    Divider()
+                    debugRow("相手のBLE記録", value: "\(model.syncedPeerSessionCount)件")
+                    Divider()
+                    Button("今すぐ記録・メモを同期") {
+                        Task { await model.syncSharedHistoryNow() }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .disabled(model.isHistorySyncing || !state.isPaired)
+                }
+
+                // 3. 位置情報補完デバッグ
+                debugBlock(title: "位置情報補完デバッグ") {
+                    HStack(alignment: .top) {
+                        Text("取得状態")
+                            .font(.subheadline)
+                        Spacer(minLength: 12)
+                        Text(model.locationMonitor.statusDescription)
+                            .font(.caption)
+                            .foregroundStyle(model.locationMonitor.isReducedAccuracyWarning ? .orange : .secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    if let lastCapture = model.locationMonitor.lastCaptureDate {
+                        Divider()
+                        debugRow("直近の位置取得", value: lastCapture.formatted())
+                    }
+                    Divider()
+                    debugRow("CloudKit 同期", value: model.locationSyncStatusText)
+                    Divider()
+                    debugRow("位置補完で一致", value: "\(model.locationMatchedSessions.count)件")
+                    Divider()
+                    Button("今すぐ位置情報を同期・突き合わせ") {
+                        Task { await model.syncLocationNow(requestFreshFix: true) }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .disabled(model.isLocationSyncing || !state.isPaired || !model.locationMonitor.isEnabled)
+                }
+
+                // 4. Bluetooth
+                debugBlock(title: "Bluetooth") {
+                    debugRow("Central", value: state.centralState)
+                    Divider()
+                    debugRow("Peripheral", value: state.peripheralState)
+                    Divider()
+                    HStack(spacing: 8) {
+                        StatusBadge(title: state.isScanning ? "探索中" : "探索停止", active: state.isScanning)
+                        StatusBadge(title: state.isAdvertising ? "広告中" : "広告停止", active: state.isAdvertising)
+                    }
+                    Divider()
+                    debugRow("認証済みリンク", value: String(state.activeLinkCount))
+                    ForEach(state.activeLinksSummary, id: \.self) { summary in
+                        Text(summary)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    HStack {
+                        Text(state.activeSession == nil ? "直近の接続経路" : "接続経路")
+                            .font(.subheadline)
+                        Spacer()
+                        if let path = state.activeSession?.connectionPath ?? state.lastConnectionPath {
+                            StatusBadge(title: path.rawValue, active: state.activeSession != nil)
+                        } else {
+                            Text("未接続")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
+                    debugRow("最終認証", value: state.lastAuthDate?.formatted() ?? "未認証")
+                    if let error = state.lastErrorMessage {
+                        Divider()
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                // 5. 診断
+                debugBlock(title: "診断") {
+                    NavigationLink {
+                        LogsView()
+                    } label: {
+                        HStack {
+                            Text("BLE 診断ログ・書き出し")
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    Divider()
+                    Button("デバッグログを消去", role: .destructive) {
+                        confirmClear = true
+                    }
+                    .font(.subheadline.weight(.semibold))
                     .confirmationDialog("この端末のログを消去しますか？", isPresented: $confirmClear, titleVisibility: .visible) {
                         Button("消去する", role: .destructive) { model.clearLogs() }
                         Button("キャンセル", role: .cancel) {}
                     } message: {
                         Text("記録中の区間を含め、保存した記録区間と診断イベントをすべて消去します。この操作は取り消せません。")
                     }
-            } header: {
-                Text("診断").font(FoamFont.bold(13, relativeTo: .footnote))
+                }
             }
+            .padding(14)
+            .background {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(UIColor.secondarySystemGroupedBackground))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                    }
+            }
+            .font(.system(.subheadline))
+            .foregroundStyle(Color.primary)
         }
-        .font(FoamFont.medium(16))
-        .navigationTitle("設定")
-        .sheet(isPresented: $showPairing) { PairingView() }
+        .padding(.top, 10)
+    }
+
+    @ViewBuilder
+    private func debugBlock<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                content()
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(UIColor.systemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private func debugRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+                .font(.subheadline)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct ReleaseBubbleCard<Content: View>: View {
+    let title: String
+    let isTogether: Bool
+    let seed: Double
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(FoamFont.bold(13.5, relativeTo: .footnote))
+                .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                .padding(.horizontal, 6)
+
+            content()
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    SoapBubbleSurface(
+                        cornerStyle: .roundedRect(24),
+                        prominence: .standard,
+                        isTogether: isTogether,
+                        seed: seed,
+                        wobbleScale: 0.35,
+                        animated: false
+                    )
+                }
+        }
     }
 }
 
@@ -165,7 +493,7 @@ private struct StatusBadge: View {
     let active: Bool
     var body: some View {
         Text(title)
-            .font(FoamFont.bold(12, relativeTo: .caption))
+            .font(.caption.bold())
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(active ? Color.green.opacity(0.18) : Color.secondary.opacity(0.12), in: Capsule())

@@ -9,13 +9,17 @@ struct RootFoamView: View {
     @State private var showSettings = false
     @State private var showPairing = false
     @State private var month = Date.now
+    @State private var pendingDayRoute: SelectedDayRoute?
 
     var body: some View {
         ZStack {
             FoamTheme.sky(together: false).ignoresSafeArea()
             FoamTheme.sky(together: true).ignoresSafeArea().opacity(appModel.isTogetherNow ? 1 : 0)
                 .animation(.easeInOut(duration: 1), value: appModel.isTogetherNow)
-            FoamAmbientBackgroundView(isTogether: appModel.isTogetherNow).ignoresSafeArea()
+            FoamAmbientBackgroundView(
+                isTogether: appModel.isTogetherNow,
+                softened: tab == .calendar
+            ).ignoresSafeArea()
             FoamTapObserverView(excludedBottomHeight: 112) { normalizedPoint in
                 emitScreenPuff(at: normalizedPoint)
             }
@@ -30,16 +34,21 @@ struct RootFoamView: View {
                                 emitScreenPuff(at: CGPoint(x: 0.5, y: 0.48))
                             }
                         },
-                        onCalendar: { date in
-                            month = date
+                        onOpenUnknownEnd: { encounter in
+                            month = encounter.startedAt
+                            pendingDayRoute = SelectedDayRoute(
+                                date: encounter.startedAt,
+                                startAdding: false,
+                                focusEncounterID: encounter.id
+                            )
                             tab = .calendar
                         }
                     )
                 } else {
-                    CalendarView(displayedMonth: $month)
+                    CalendarView(displayedMonth: $month, pendingRoute: $pendingDayRoute)
                 }
             }.padding(.bottom, 96)
-            FoamChromeOverlay { showSettings = true }
+            FoamChromeOverlay(isTogether: appModel.isTogetherNow) { showSettings = true }
             VStack {
                 Spacer()
                 FoamTabBar(selected: $tab, isTogether: appModel.isTogetherNow, onBurst: emitTabSplash)
@@ -51,10 +60,6 @@ struct RootFoamView: View {
         .sheet(isPresented: $showSettings) {
             NavigationStack {
                 SettingsView()
-                    .toolbar {
-                        Button("閉じる") { showSettings = false }
-                            .font(FoamFont.bold(16))
-                    }
             }
             .font(FoamFont.medium(16))
         }

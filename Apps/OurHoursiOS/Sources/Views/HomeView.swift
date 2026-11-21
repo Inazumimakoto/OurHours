@@ -7,9 +7,12 @@ struct HomeView: View {
     @Environment(\.openURL) private var openURL
     let onPair: () -> Void
     let onBurst: () -> Void
-    let onCalendar: (Date) -> Void
+    let onOpenUnknownEnd: (ResolvedEncounter) -> Void
 
     var body: some View {
+        let unknownEnds = model.resolvedEncounters.filter { $0.status == .unknownEnd }
+        let latestUnknownEnd = unknownEnds.last
+
         VStack {
             Spacer(minLength: 50)
             if let start = model.activeSessionStartDate {
@@ -34,7 +37,16 @@ struct HomeView: View {
             Spacer()
             FoamMascotView(isTogether: model.isTogetherNow, onTapBurst: onBurst)
             Spacer()
-            if !model.isTogetherNow {
+            if model.isTogetherNow {
+                if let pending = latestUnknownEnd {
+                    Button { onOpenUnknownEnd(pending) } label: {
+                        Label("終了不明の記録を確認（\(unknownEnds.count)件）", systemImage: "exclamationmark.circle")
+                    }
+                    .font(FoamFont.bold(14))
+                    .foamButtonSurface()
+                    .padding(.bottom, 10)
+                }
+            } else {
                 VStack(spacing: 10) {
                     if !model.snapshot.isPaired {
                         Button("ペアを設定してはじめる", action: onPair)
@@ -57,9 +69,9 @@ struct HomeView: View {
                         .font(FoamFont.bold(14))
                         .foamButtonSurface()
                     }
-                    if let pending = model.resolvedEncounters.last(where: { $0.status == .unknownEnd }) {
-                        Button { onCalendar(pending.startedAt) } label: {
-                            Label("終了不明の記録を確認", systemImage: "exclamationmark.circle")
+                    if let pending = latestUnknownEnd {
+                        Button { onOpenUnknownEnd(pending) } label: {
+                            Label("終了不明の記録を確認（\(unknownEnds.count)件）", systemImage: "exclamationmark.circle")
                         }
                         .font(FoamFont.bold(14))
                         .foamButtonSurface()

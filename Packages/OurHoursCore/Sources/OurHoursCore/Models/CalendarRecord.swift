@@ -309,6 +309,52 @@ public enum EncounterCalendarAggregator {
             .values.count { !$0.slices.isEmpty }
     }
 
+    public static func coalescedActiveSessionStart(
+        autoSessions: [EncounterSession],
+        peerSessions: [SyncedPeerSession] = [],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot
+    ) -> Date? {
+        let activeCandidates = autoSessions.filter { session in
+            guard session.status == .active else { return false }
+            return journal.sessionOverrides[session.id] == nil
+        }
+        guard let activeSession = activeCandidates.min(by: {
+            if $0.startedAt == $1.startedAt { return $0.id.uuidString < $1.id.uuidString }
+            return $0.startedAt < $1.startedAt
+        }) else {
+            return nil
+        }
+
+        let pairID = activeSession.pairID
+        let resolvedForPair = resolveEncounters(
+            autoSessions: autoSessions.filter { $0.pairID == pairID },
+            peerSessions: peerSessions.filter { $0.pairID == pairID },
+            locationSessions: locationSessions.filter { $0.pairID == pairID },
+            journal: journal
+        )
+        let completedForPair: [(start: Date, end: Date)] = resolvedForPair.compactMap { encounter in
+            guard encounter.status == .completed,
+                  let end = encounter.endedAt,
+                  end > encounter.startedAt else {
+                return nil
+            }
+            return (encounter.startedAt, end)
+        }
+
+        var effectiveStart = activeSession.startedAt
+        var extended = true
+        while extended {
+            extended = false
+            let threshold = effectiveStart.addingTimeInterval(-bleShortGapMergeSeconds)
+            for item in completedForPair where item.end >= threshold && item.start < effectiveStart {
+                effectiveStart = item.start
+                extended = true
+            }
+        }
+        return effectiveStart
+    }
+
     private struct BLENode {
         let id: UUID
         let pairID: UUID
