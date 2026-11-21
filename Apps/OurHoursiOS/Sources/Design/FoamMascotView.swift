@@ -12,30 +12,32 @@ struct FoamMascotView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if isTogether, let startDate = activeSessionStartDate {
-            TimelineView(.periodic(from: .now, by: 5)) { tick in
-                mascotStack(growth: Self.growthScale(isTogether: true, startDate: startDate, now: tick.date))
-            }
-        } else {
-            mascotStack(growth: 1.0)
+        TimelineView(.animation(minimumInterval: 0.5, paused: !isTogether || activeSessionStartDate == nil)) { tick in
+            mascotStack(growth: Self.growthScale(isTogether: isTogether, startDate: activeSessionStartDate, now: tick.date))
         }
     }
 
     private static func growthScale(isTogether: Bool, startDate: Date?, now: Date) -> CGFloat {
         guard isTogether, let startDate else { return 1.0 }
         let elapsed = max(0, now.timeIntervalSince(startDate))
-        // Smoothly expands up to ~1.24x over hours spent together.
-        return 1.0 + 0.24 * CGFloat(1.0 - exp(-elapsed / 5_400.0))
+        // Smoothly grows from 1.0x up to 1.78x (~228pt) at 10 hours spent together.
+        let progress = min(1.0, elapsed / 36_000.0)
+        let eased = 1.0 - pow(1.0 - progress, 1.45)
+        return 1.0 + 0.78 * CGFloat(eased)
     }
 
     @ViewBuilder
     private func mascotStack(growth: CGFloat) -> some View {
+        let progress = max(0, (growth - 1.0) / 0.78)
+        let effectiveScale = isTogether ? growth : 1.0
+
         ZStack {
             Circle()
                 .fill(RadialGradient(colors: [FoamTheme.cream, .clear], center: .center, startRadius: 18, endRadius: 122))
-                .frame(width: 244 * growth, height: 244 * growth)
+                .frame(width: 244, height: 244)
+                .scaleEffect(effectiveScale)
                 .opacity((isPaired && isTogether) ? 0.85 : 0)
-                .frame(width: 175 * growth, height: 175 * growth)
+                .frame(width: 175, height: 175)
                 .accessibilityHidden(true)
             if isPaired {
                 ForEach(0..<2) { index in
@@ -43,29 +45,31 @@ struct FoamMascotView: View {
                     FoamCharacter(
                         index: index,
                         color: index == 0 ? localColor : partnerColor,
-                        size: 128 * growth,
+                        size: 128,
                         isTogether: isTogether,
                         onTap: onTapBurst
                     )
+                    .scaleEffect(effectiveScale)
                     .rotationEffect(.degrees(side * (isTogether ? 9 : -7)))
                     .offset(
-                        x: side * (isTogether ? 32 * growth : 56),
-                        y: side * (isTogether ? 9 * growth : 40)
+                        x: side * (isTogether ? (32 + 24 * progress) : 56),
+                        y: side * (isTogether ? (9 + 6 * progress) : 40)
                     )
                 }
             } else {
                 FoamCharacter(
                     index: 0,
                     color: localColor,
-                    size: 128 * growth,
+                    size: 128,
                     isTogether: isTogether,
                     onTap: onTapBurst
                 )
+                .scaleEffect(effectiveScale)
             }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.85, dampingFraction: 0.72), value: isTogether)
+        .animation(reduceMotion ? nil : .spring(response: 0.95, dampingFraction: 0.78), value: isTogether)
         .animation(reduceMotion ? nil : .spring(response: 0.85, dampingFraction: 0.72), value: isPaired)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.8), value: growth)
+        .animation(reduceMotion ? nil : .spring(response: 1.1, dampingFraction: 0.82), value: growth)
     }
 }
 

@@ -50,15 +50,43 @@ struct CalendarView: View {
                     monthButton(1)
                 }
 
-                HStack(spacing: 16) {
+                let isCurrentMonth = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month)
+                HStack(spacing: 12) {
                     let seconds = summaries.values.reduce(0) { $0 + $1.totalRecordedSeconds }
                     let days = summaries.values.count { !$0.slices.isEmpty }
-                    Text("\(calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month) ? "今月" : "月合計") \(FoamTheme.duration(seconds)) · \(days)日")
+                    Text("\(isCurrentMonth ? "今月" : "月合計") \(FoamTheme.duration(seconds)) · \(days)日")
                         .font(FoamFont.bold(15, relativeTo: .subheadline))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .foamCloudSurface(isTogether: model.isTogetherNow, compact: true)
 
+                    if !isCurrentMonth {
+                        Button {
+                            guard !isAnimatingCommit else { return }
+                            jumpToCurrentMonth(from: currentFirst)
+                        } label: {
+                            Text("今日")
+                                .font(FoamFont.bold(14, relativeTo: .subheadline))
+                                .foregroundStyle(FoamTheme.ink)
+                                .padding(.horizontal, 14)
+                                .frame(height: 44)
+                                .background {
+                                    SoapBubbleSurface(
+                                        cornerStyle: .capsule,
+                                        prominence: .standard,
+                                        isTogether: model.isTogetherNow,
+                                        seed: 3.1,
+                                        wobbleScale: 0.75
+                                    )
+                                }
+                        }
+                        .buttonStyle(CalendarBounceButtonStyle())
+                        .accessibilityLabel("今月に戻る")
+                        .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    }
+
                     Button {
-                        let targetDate = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month) ? .now : currentFirst
+                        let targetDate = isCurrentMonth ? .now : currentFirst
                         selectedRoute = SelectedDayRoute(date: targetDate, startAdding: true)
                     } label: {
                         SoapBubbleSurface(
@@ -74,6 +102,7 @@ struct CalendarView: View {
                     .buttonStyle(CalendarBounceButtonStyle())
                     .accessibilityLabel("記録を追加")
                 }
+                .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: isCurrentMonth)
 
                 ZStack(alignment: .top) {
                     CalendarMonthPageView(
@@ -207,6 +236,16 @@ struct CalendarView: View {
     private func commitMonthTransition(direction: Int, currentFirst: Date) {
         let dir = direction >= 0 ? 1 : -1
         guard let target = calendar.date(byAdding: .month, value: dir, to: currentFirst) else { return }
+        animateTransition(to: target, direction: dir)
+    }
+
+    private func jumpToCurrentMonth(from currentFirst: Date) {
+        let todayFirst = calendar.dateInterval(of: .month, for: .now)?.start ?? .now
+        let dir = todayFirst >= currentFirst ? 1 : -1
+        animateTransition(to: todayFirst, direction: dir)
+    }
+
+    private func animateTransition(to target: Date, direction dir: Int) {
         transitionTask?.cancel()
 
         if reduceMotion {
