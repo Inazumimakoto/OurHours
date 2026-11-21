@@ -464,7 +464,7 @@ struct DayDetailSheet: View {
                 .foregroundStyle(FoamTheme.ink.opacity(0.42))
             }
 
-            if day.hasActiveSession {
+            if day.hasActiveSession && (day.totalRecordedSeconds > 0 || day.hasUnknownEnd) {
                 Text("いま一緒")
                     .font(FoamFont.bold(11.5, relativeTo: .caption))
                     .foregroundStyle(FoamTheme.warmAccent)
@@ -800,7 +800,7 @@ struct DayDetailSheet: View {
                 scale: scale,
                 axisHeight: axisHeight,
                 editable: item.canEditEnd,
-                isLiveEnd: item.status == .active
+                isLiveEnd: item.status == .active && !item.continuesToNextDay
             )
             .zIndex(6)
 
@@ -862,7 +862,7 @@ struct DayDetailSheet: View {
                         Text("?")
                             .font(FoamFont.bold(15.5, relativeTo: .headline))
                             .foregroundStyle(Color(red: 0.78, green: 0.42, blue: 0.06))
-                    } else if item.status == .active {
+                    } else if item.status == .active && !item.continuesToNextDay {
                         Text("記録中")
                             .font(FoamFont.bold(13.5, relativeTo: .subheadline))
                             .foregroundStyle(FoamTheme.warmAccent)
@@ -963,7 +963,7 @@ struct DayDetailSheet: View {
                         Text("?")
                             .font(FoamFont.bold(15, relativeTo: .headline))
                             .foregroundStyle(Color(red: 0.78, green: 0.42, blue: 0.06))
-                    } else if item.status == .active {
+                    } else if item.status == .active && !item.continuesToNextDay {
                         Text("記録中")
                             .font(FoamFont.bold(13.5, relativeTo: .subheadline))
                             .foregroundStyle(FoamTheme.warmAccent)
@@ -1485,7 +1485,11 @@ struct DayDetailSheet: View {
             }
 
             if slice.status == .active {
-                eMin = min(1440, max(sMin + 15, liveEndMinute))
+                if let end = slice.sliceEnd {
+                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                } else {
+                    eMin = min(1440, max(sMin + 15, liveEndMinute))
+                }
             }
             let status: SessionStatus = (inlineEditor?.target == target && slice.status == .unknownEnd && inlineEditor?.didTouchEnd == true)
                 || (activeDrag?.target == target && activeDrag?.edge == .end)
@@ -1506,8 +1510,8 @@ struct DayDetailSheet: View {
                     sliceStartMinute: sMin,
                     sliceEndMinute: max(sMin, eMin),
                     status: status,
-                    continuesFromPreviousDay: slice.fullStart < slice.sliceStart,
-                    continuesToNextDay: (slice.sliceEnd.flatMap { se in slice.fullEnd.map { $0 > se } }) ?? false,
+                    continuesFromPreviousDay: slice.continuesFromPreviousDay,
+                    continuesToNextDay: slice.continuesToNextDay,
                     durationSeconds: itemDuration,
                     canEditStart: encounter != nil,
                     canEditEnd: slice.status != .active && encounter != nil,

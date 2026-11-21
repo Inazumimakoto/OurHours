@@ -509,4 +509,79 @@ struct CalendarAggregatorTests {
             ) == base
         )
     }
+
+    @Test func activeSessionSpansMultipleDaysThroughActiveReferenceDate() throws {
+        let nov18 = try date("2026-11-18T23:00:00+09:00")
+        let nov19Start = try date("2026-11-19T00:00:00+09:00")
+        let nov20Start = try date("2026-11-20T00:00:00+09:00")
+        let nov21Start = try date("2026-11-21T00:00:00+09:00")
+        let nov22Start = try date("2026-11-22T00:00:00+09:00")
+        let now = try date("2026-11-21T20:36:00+09:00")
+
+        let active = session(nov18, nil, status: .active)
+        let unknown = session(nov18, nil, status: .unknownEnd)
+
+        let summaries = EncounterCalendarAggregator.daySummaries(
+            forMonth: nov18,
+            autoSessions: [active, unknown],
+            journal: JournalSnapshot(),
+            calendar: tokyo,
+            activeReferenceDate: now
+        )
+
+        let d18 = try #require(summaries["2026-11-18"])
+        #expect(d18.slices.count == 2)
+        let d18Active = try #require(d18.slices.first { $0.status == .active })
+        #expect(d18Active.sliceStart == nov18 && d18Active.sliceEnd == nov19Start)
+        #expect(!d18Active.continuesFromPreviousDay && d18Active.continuesToNextDay)
+        #expect(d18.continuesToNextDay)
+
+        let d19 = try #require(summaries["2026-11-19"])
+        #expect(d19.slices.count == 1)
+        #expect(d19.hasActiveSession && !d19.hasUnknownEnd)
+        #expect(d19.slices[0].sliceStart == nov19Start && d19.slices[0].sliceEnd == nov20Start)
+        #expect(d19.continuesFromPreviousDay && d19.continuesToNextDay)
+
+        let d20 = try #require(summaries["2026-11-20"])
+        #expect(d20.slices.count == 1)
+        #expect(d20.hasActiveSession)
+        #expect(d20.slices[0].sliceStart == nov20Start && d20.slices[0].sliceEnd == nov21Start)
+        #expect(d20.continuesFromPreviousDay && d20.continuesToNextDay)
+
+        let d21 = try #require(summaries["2026-11-21"])
+        #expect(d21.slices.count == 1)
+        #expect(d21.hasActiveSession)
+        #expect(d21.slices[0].sliceStart == nov21Start && d21.slices[0].sliceEnd == nil)
+        #expect(d21.continuesFromPreviousDay && !d21.continuesToNextDay)
+
+        #expect(summaries["2026-11-22"] == nil)
+        #expect(EncounterCalendarAggregator.daySummary(
+            for: nov20Start, autoSessions: [active, unknown], journal: JournalSnapshot(), calendar: tokyo, activeReferenceDate: now
+        ) == d20)
+        #expect(EncounterCalendarAggregator.daySummary(
+            for: nov22Start, autoSessions: [active, unknown], journal: JournalSnapshot(), calendar: tokyo, activeReferenceDate: now
+        ).slices.isEmpty)
+        #expect(EncounterCalendarAggregator.metDayCount(
+            forMonth: nov18, autoSessions: [active, unknown], journal: JournalSnapshot(), calendar: tokyo, activeReferenceDate: now
+        ) == 4)
+        #expect(EncounterCalendarAggregator.monthlyRecordedSeconds(
+            forMonth: nov18, autoSessions: [active, unknown], journal: JournalSnapshot(), calendar: tokyo, activeReferenceDate: now
+        ) == 0)
+
+        // Month boundary crossing
+        let oct31 = try date("2026-10-31T23:00:00+09:00")
+        let nov2 = try date("2026-11-02T10:00:00+09:00")
+        let octActive = session(oct31, nil, status: .active)
+        let octSummaries = EncounterCalendarAggregator.daySummaries(
+            forMonth: oct31, autoSessions: [octActive], journal: JournalSnapshot(), calendar: tokyo, activeReferenceDate: nov2
+        )
+        let novSummaries = EncounterCalendarAggregator.daySummaries(
+            forMonth: nov2, autoSessions: [octActive], journal: JournalSnapshot(), calendar: tokyo, activeReferenceDate: nov2
+        )
+        #expect(octSummaries.keys.sorted() == ["2026-10-31"])
+        #expect(octSummaries["2026-10-31"]?.continuesToNextDay == true)
+        #expect(novSummaries.keys.sorted() == ["2026-11-01", "2026-11-02"])
+        #expect(novSummaries["2026-11-01"]?.continuesFromPreviousDay == true && novSummaries["2026-11-01"]?.continuesToNextDay == true)
+        #expect(novSummaries["2026-11-02"]?.continuesFromPreviousDay == true && novSummaries["2026-11-02"]?.continuesToNextDay == false)
+    }
 }

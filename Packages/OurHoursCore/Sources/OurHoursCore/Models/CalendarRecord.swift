@@ -63,6 +63,16 @@ public struct DayEncounterSlice: Sendable, Equatable, Identifiable {
         guard status == .completed, let sliceEnd else { return nil }
         return max(0, sliceEnd.timeIntervalSince(sliceStart))
     }
+
+    public var continuesFromPreviousDay: Bool {
+        fullStart < sliceStart
+    }
+
+    public var continuesToNextDay: Bool {
+        guard let sliceEnd else { return false }
+        if let fullEnd { return fullEnd > sliceEnd }
+        return status == .active
+    }
 }
 
 public enum BubbleIntensity: Int, Sendable, Equatable, Comparable {
@@ -91,14 +101,11 @@ public struct DaySummary: Sendable, Equatable, Identifiable {
     }
 
     public var continuesFromPreviousDay: Bool {
-        slices.contains { $0.fullStart < $0.sliceStart }
+        slices.contains(where: \.continuesFromPreviousDay)
     }
 
     public var continuesToNextDay: Bool {
-        slices.contains { slice in
-            guard let sliceEnd = slice.sliceEnd, let fullEnd = slice.fullEnd else { return false }
-            return fullEnd > sliceEnd
-        }
+        slices.contains(where: \.continuesToNextDay)
     }
 }
 
@@ -201,7 +208,8 @@ public enum EncounterCalendarAggregator {
         peerSessions: [SyncedPeerSession] = [],
         locationSessions: [LocationMatchedSession] = [],
         journal: JournalSnapshot,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        activeReferenceDate: Date? = nil
     ) -> [String: DaySummary] {
         guard let month = calendar.dateInterval(of: .month, for: monthDate) else { return [:] }
         let encounters = resolveEncounters(
@@ -215,10 +223,9 @@ public enum EncounterCalendarAggregator {
             // Start inside the requested month so long encounters only visit days they can contribute to.
             var date = max(encounter.startedAt, month.start)
             while date < month.end, let day = calendar.dateInterval(of: .day, for: date),
-                  let slice = makeSlice(encounter, day: day, calendar: calendar) {
+                  let slice = makeSlice(encounter, day: day, calendar: calendar, activeReferenceDate: activeReferenceDate) {
                 slicesByDay[day.start, default: []].append(slice)
-                guard let sliceEnd = slice.sliceEnd, sliceEnd == day.end,
-                      let fullEnd = slice.fullEnd, fullEnd > day.end else { break }
+                guard slice.continuesToNextDay else { break }
                 date = day.end
             }
         }
@@ -243,7 +250,8 @@ public enum EncounterCalendarAggregator {
         peerSessions: [SyncedPeerSession] = [],
         locationSessions: [LocationMatchedSession] = [],
         journal: JournalSnapshot,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        activeReferenceDate: Date? = nil
     ) -> DaySummary {
         let start = calendar.startOfDay(for: date)
         let key = dayKey(for: start, calendar: calendar)
@@ -255,7 +263,7 @@ public enum EncounterCalendarAggregator {
                 locationSessions: locationSessions,
                 journal: journal
             ).compactMap {
-                makeSlice($0, day: day, calendar: calendar)
+                makeSlice($0, day: day, calendar: calendar, activeReferenceDate: activeReferenceDate)
             }
         } else {
             slices = []
@@ -269,7 +277,8 @@ public enum EncounterCalendarAggregator {
         peerSessions: [SyncedPeerSession] = [],
         locationSessions: [LocationMatchedSession] = [],
         journal: JournalSnapshot,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        activeReferenceDate: Date? = nil
     ) -> TimeInterval {
         let summaries = daySummaries(
             forMonth: monthDate,
@@ -277,7 +286,8 @@ public enum EncounterCalendarAggregator {
             peerSessions: peerSessions,
             locationSessions: locationSessions,
             journal: journal,
-            calendar: calendar
+            calendar: calendar,
+            activeReferenceDate: activeReferenceDate
         )
         return summaries.keys.sorted().reduce(0) { $0 + (summaries[$1]?.totalRecordedSeconds ?? 0) }
     }
@@ -308,7 +318,8 @@ public enum EncounterCalendarAggregator {
         peerSessions: [SyncedPeerSession] = [],
         locationSessions: [LocationMatchedSession] = [],
         journal: JournalSnapshot,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        activeReferenceDate: Date? = nil
     ) -> Int {
         daySummaries(
             forMonth: monthDate,
@@ -316,7 +327,8 @@ public enum EncounterCalendarAggregator {
             peerSessions: peerSessions,
             locationSessions: locationSessions,
             journal: journal,
-            calendar: calendar
+            calendar: calendar,
+            activeReferenceDate: activeReferenceDate
         )
             .values.count { !$0.slices.isEmpty }
     }
@@ -718,7 +730,10 @@ public enum EncounterCalendarAggregator {
     }
 
     private static func makeSlice(
-        _ encounter: ResolvedEncounter, day: DateInterval, calendar: Calendar
+        _ encounter: ResolvedEncounter,
+        day: DateInterval,
+        calendar: Calendar,
+        activeReferenceDate: Date? = nil
     ) -> DayEncounterSlice? {
         guard encounter.startedAt < day.end else { return nil }
         let sliceStart = max(encounter.startedAt, day.start)
@@ -727,6 +742,10 @@ public enum EncounterCalendarAggregator {
             // A session ending at midnight has no slice on the following day (SPEC §4.4).
             guard end > day.start else { return nil }
             sliceEnd = min(end, day.end)
+        } else if encounter.status == .active, let now = activeReferenceDate {
+            let effectiveEnd = max(encounter.startedAt, now)
+            guard effectiveEnd >= day.start else { return nil }
+            sliceEnd = effectiveEnd >= day.end ? day.end : nil
         } else {
             guard encounter.startedAt >= day.start else { return nil }
             sliceEnd = encounter.status == .completed && encounter.endedAt != nil ? sliceStart : nil

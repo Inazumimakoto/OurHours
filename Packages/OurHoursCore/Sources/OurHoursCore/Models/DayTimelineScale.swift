@@ -46,8 +46,12 @@ public struct DayTimelineScale: Sendable, Equatable {
             case .unknownEnd:
                 eMin = min(1440, sMin + 60)
             case .active:
-                let liveMin = Int(ceil(now.timeIntervalSince(dayStart) / 60.0))
-                eMin = min(1440, max(sMin + 30, liveMin))
+                if let end = slice.sliceEnd {
+                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                } else {
+                    let liveMin = Int(ceil(now.timeIntervalSince(dayStart) / 60.0))
+                    eMin = min(1440, max(sMin + 30, liveMin))
+                }
             }
             include(sMin, eMin)
         }

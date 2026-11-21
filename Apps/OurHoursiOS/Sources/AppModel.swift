@@ -460,7 +460,8 @@ final class AppModel {
             autoSessions: snapshot.sessions,
             peerSessions: activePairPeerSessions,
             locationSessions: locationMatchedSessions,
-            journal: journal
+            journal: journal,
+            activeReferenceDate: .now
         )
     }
 
@@ -470,7 +471,8 @@ final class AppModel {
             autoSessions: snapshot.sessions,
             peerSessions: activePairPeerSessions,
             locationSessions: locationMatchedSessions,
-            journal: journal
+            journal: journal,
+            activeReferenceDate: .now
         )
     }
 
@@ -480,7 +482,8 @@ final class AppModel {
             autoSessions: snapshot.sessions,
             peerSessions: activePairPeerSessions,
             locationSessions: locationMatchedSessions,
-            journal: journal
+            journal: journal,
+            activeReferenceDate: .now
         )
     }
 
@@ -490,7 +493,8 @@ final class AppModel {
             autoSessions: snapshot.sessions,
             peerSessions: activePairPeerSessions,
             locationSessions: locationMatchedSessions,
-            journal: journal
+            journal: journal,
+            activeReferenceDate: .now
         )
     }
 
