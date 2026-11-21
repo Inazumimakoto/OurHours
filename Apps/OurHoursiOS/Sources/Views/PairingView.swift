@@ -74,7 +74,17 @@ struct PairingFlow: View {
                             Button(onSkip == nil ? "閉じる" : "ホームへ戻る", action: onFinish)
                                 .buttonStyle(FoamPrimaryActionStyle())
                         } else {
-                            Button("相手が読み取ったら次へ") {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(FoamTheme.ink)
+                                Text("相手が読み取ると自動で次へ進みます…")
+                                    .font(FoamFont.regular(13.5, relativeTo: .footnote))
+                                    .foregroundStyle(FoamTheme.ink.opacity(0.74))
+                            }
+                            .padding(.top, 4)
+
+                            Button("手動で次へ進む") {
                                 move(to: .completion(.partnerA))
                             }
                             .buttonStyle(FoamPrimaryActionStyle())
@@ -106,6 +116,25 @@ struct PairingFlow: View {
             .onChange(of: errorMessage) {
                 if errorMessage != nil { scroll.scrollTo("pairingError", anchor: .bottom) }
             }
+            .onChange(of: model.hasPartnerConnectedForCurrentPair) {
+                advanceFromInviteIfPartnerJoined()
+            }
+            .task(id: stage) {
+                guard case let .invite(_, existing) = stage, !existing else { return }
+                advanceFromInviteIfPartnerJoined()
+                try? await Task.sleep(for: .seconds(2))
+                while !Task.isCancelled {
+                    if case let .invite(_, existingNow) = stage, !existingNow {
+                        if !model.isHistorySyncing {
+                            await model.syncSharedHistoryNow()
+                        }
+                        advanceFromInviteIfPartnerJoined()
+                        try? await Task.sleep(for: .seconds(3))
+                    } else {
+                        break
+                    }
+                }
+            }
         }
         .onAppear {
             if autoShowExistingInvite, stage == .choices, let url = existingInviteURL {
@@ -123,6 +152,13 @@ struct PairingFlow: View {
     private var existingInviteURL: String? {
         guard let pair = model.snapshot.pairConfiguration, pair.localRole == .partnerA else { return nil }
         return PairingPayloadCodec.encode(pair, for: .partnerB)
+    }
+
+    private func advanceFromInviteIfPartnerJoined() {
+        guard case let .invite(_, existing) = stage, !existing else { return }
+        guard model.hasPartnerConnectedForCurrentPair else { return }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        move(to: .completion(.partnerA))
     }
 
     private var existingPair: some View {
@@ -154,7 +190,11 @@ struct PairingFlow: View {
                 }
             }
 
-            ReleaseBubbleCard(title: "相手を招待する", isTogether: model.isTogetherNow, seed: 2.1) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("相手を招待する")
+                    .font(FoamFont.bold(13.5, relativeTo: .footnote))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                    .padding(.horizontal, 6)
                 Button(onSkip == nil ? "同意して招待QRコードを作成" : "招待QRコードを出す", systemImage: "qrcode", action: startInvite)
                     .buttonStyle(FoamPrimaryActionStyle())
             }
@@ -165,7 +205,7 @@ struct PairingFlow: View {
                         errorMessage = nil
                         showScanner = true
                     }
-                    .buttonStyle(FoamPrimaryActionStyle())
+                    .buttonStyle(FoamCardActionStyle())
 
                     DisclosureGroup("招待URLを貼り付けて設定") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -177,7 +217,7 @@ struct PairingFlow: View {
                                 .lineLimit(1...3)
                                 .textFieldStyle(.roundedBorder)
                             Button(onSkip == nil ? "同意して招待URLで設定" : "招待URLで設定") { completePairing(manualURL) }
-                                .buttonStyle(FoamPrimaryActionStyle())
+                                .buttonStyle(FoamCardActionStyle())
                                 .disabled(manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                         .padding(.top, 10)
@@ -267,8 +307,7 @@ private struct InviteCodeCard: View {
                     )
                     copied = true
                 }
-                .font(FoamFont.bold(14, relativeTo: .subheadline))
-                .foamButtonSurface(wobble: false)
+                .buttonStyle(FoamCardActionStyle(fullWidth: false))
             }
             .frame(maxWidth: .infinity)
         }
@@ -294,7 +333,7 @@ private struct PairingCompletionForm: View {
         self.actionTitle = actionTitle
         self.onFinish = onFinish
         _nickname = State(initialValue: nickname)
-        _anniversary = State(initialValue: anniversary)
+        _anniversary = State(initialValue: role == .partnerA ? (anniversary ?? CalendarDateValue(date: .now)) : anniversary)
     }
 
     var body: some View {
@@ -339,16 +378,47 @@ private struct PairingCompletionForm: View {
 
             Button(actionTitle) {
                 model.setPartnerNickname(nickname)
-                if role == .partnerA, didEditAnniversary || anniversary != model.anniversaryDate {
-                    model.setAnniversaryDate(anniversary)
+                if role == .partnerA {
+                    if let anniversary, didEditAnniversary || anniversary != model.anniversaryDate {
+                        model.setAnniversaryDate(anniversary)
+                    } else if anniversary == nil, didEditAnniversary, model.anniversaryDate != nil {
+                        model.setAnniversaryDate(nil)
+                    }
                 }
                 onFinish()
             }
             .buttonStyle(FoamPrimaryActionStyle())
         }
         .onChange(of: model.anniversaryDate) {
-            if !didEditAnniversary { anniversary = model.anniversaryDate }
+            if !didEditAnniversary, let synced = model.anniversaryDate { anniversary = synced }
         }
+    }
+}
+
+struct FoamCardActionStyle: ButtonStyle {
+    var fullWidth = true
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(FoamFont.bold(15, relativeTo: .subheadline))
+            .multilineTextAlignment(.center)
+            .foregroundStyle(FoamTheme.ink)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 44)
+            .background {
+                Capsule()
+                    .fill(Color.white.opacity(configuration.isPressed ? 0.56 : 0.78))
+                    .overlay {
+                        Capsule().strokeBorder(Color.white.opacity(0.92), lineWidth: 1)
+                    }
+                    .shadow(color: FoamTheme.ink.opacity(0.06), radius: 5, y: 2)
+            }
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .opacity(isEnabled ? 1 : 0.5)
     }
 }
 

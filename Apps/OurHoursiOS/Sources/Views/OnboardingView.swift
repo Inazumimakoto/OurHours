@@ -228,7 +228,7 @@ private struct OnboardingPermissionCards: View {
                         settingsButton
                     } else {
                         Button("Bluetooth をオンにする", action: model.requestBluetoothPermission)
-                            .buttonStyle(FoamPrimaryActionStyle())
+                            .buttonStyle(FoamCardActionStyle())
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -253,7 +253,7 @@ private struct OnboardingPermissionCards: View {
                         }
                     case .authorizedWhenInUse where monitor.isEnabled:
                         Button("「常に」を許可する", action: monitor.enableAndRequestAuthorization)
-                            .buttonStyle(FoamPrimaryActionStyle())
+                            .buttonStyle(FoamCardActionStyle())
                         Button(action: openSettings) {
                             Text("設定を開く").underline()
                         }
@@ -264,7 +264,7 @@ private struct OnboardingPermissionCards: View {
                         settingsButton
                     default:
                         Button("位置情報を許可する", action: monitor.enableAndRequestAuthorization)
-                            .buttonStyle(FoamPrimaryActionStyle())
+                            .buttonStyle(FoamCardActionStyle())
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,7 +283,7 @@ private struct OnboardingPermissionCards: View {
 
     private var settingsButton: some View {
         Button("設定を開く", action: openSettings)
-            .buttonStyle(FoamPrimaryActionStyle())
+            .buttonStyle(FoamCardActionStyle())
     }
 
     private func openSettings() {

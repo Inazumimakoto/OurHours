@@ -14,6 +14,19 @@ struct HistorySyncOutcome: Sendable {
     let state: HistorySyncState
     let journal: JournalSnapshot?
     let peerSessions: [SyncedPeerSession]?
+    let peerRecordDetected: Bool
+
+    init(
+        state: HistorySyncState,
+        journal: JournalSnapshot?,
+        peerSessions: [SyncedPeerSession]?,
+        peerRecordDetected: Bool = false
+    ) {
+        self.state = state
+        self.journal = journal
+        self.peerSessions = peerSessions
+        self.peerRecordDetected = peerRecordDetected
+    }
 }
 
 actor CloudKitHistorySync {
@@ -124,7 +137,8 @@ actor CloudKitHistorySync {
             return HistorySyncOutcome(
                 state: .synced(.now, peerSessions: fallbackPeerCount),
                 journal: mergedJournal,
-                peerSessions: loadedPeerSessions
+                peerSessions: loadedPeerSessions,
+                peerRecordDetected: envelopeToMerge != nil
             )
         } catch let error as CKError {
             switch error.code {

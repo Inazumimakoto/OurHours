@@ -20,6 +20,7 @@ final class AppModel {
     private(set) var localBirthday: CalendarDateValue?
     private(set) var partnerNickname: String
     private(set) var bluetoothAuthorization = CBManager.authorization
+    private(set) var confirmedPeerPairID: UUID?
 
     private let engine: OurHoursBLEEngine
     private(set) var snapshot: EngineSnapshot
@@ -424,15 +425,20 @@ final class AppModel {
     }
 
     private func configure(_ configuration: PairConfiguration) throws {
+        let previousPairID = snapshot.pairConfiguration?.pairID
         engine.configurePair(configuration)
         snapshot = engine.currentSnapshot()
         guard snapshot.pairConfiguration == configuration else {
             throw PairSetupError.saveFailed
         }
+        confirmedPeerPairID = nil
         if let cachedPeer = try? peerSyncStore.load(), cachedPeer.pairID == configuration.pairID {
             peerSessions = cachedPeer.sessions
         } else {
             peerSessions = []
+        }
+        if previousPairID != configuration.pairID {
+            write { try $0.clearRoleProfiles() }
         }
         write { try $0.setRoleProfile(role: configuration.localRole, bubbleColor: localBubbleColor, birthday: localBirthday) }
         engine.start()
@@ -443,11 +449,21 @@ final class AppModel {
         }
     }
 
+    var hasPartnerConnectedForCurrentPair: Bool {
+        guard let pair = snapshot.pairConfiguration else { return false }
+        if confirmedPeerPairID == pair.pairID { return true }
+        if snapshot.activeLinkCount > 0 { return true }
+        if let lastAuth = snapshot.lastAuthDate, lastAuth >= pair.createdAt { return true }
+        if journal.profile(for: pair.localRole.opposite) != nil { return true }
+        return false
+    }
+
     func unpair() {
         let previousConfig = snapshot.pairConfiguration
         engine.unpair()
         snapshot = engine.currentSnapshot()
         guard !snapshot.isPaired else { return }
+        confirmedPeerPairID = nil
         write { try $0.clearRoleProfiles() }
         setPartnerNickname("")
         scheduledSyncTask?.cancel()
@@ -535,6 +551,9 @@ final class AppModel {
         )
         guard snapshot.pairConfiguration == config else { return }
         historySyncState = outcome.state
+        if outcome.peerRecordDetected {
+            confirmedPeerPairID = config.pairID
+        }
         if let updatedJournal = outcome.journal {
             // Local edits can reach disk while CloudKit is uploading its earlier snapshot.
             journal = (try? journalStore.load()) ?? updatedJournal

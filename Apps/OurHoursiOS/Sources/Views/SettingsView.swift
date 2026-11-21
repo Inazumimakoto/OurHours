@@ -170,9 +170,7 @@ struct SettingsView: View {
 
                     if pair.localRole == .partnerA {
                         Button("招待QRコードを表示") { showPairing = true }
-                            .font(FoamFont.bold(15, relativeTo: .subheadline))
-                            .foregroundStyle(FoamTheme.ink)
-                            .foamButtonSurface()
+                            .buttonStyle(FoamCardActionStyle(fullWidth: false))
                     }
                 }
             } else {
@@ -181,9 +179,7 @@ struct SettingsView: View {
                         .font(FoamFont.regular(13.5, relativeTo: .footnote))
                         .foregroundStyle(FoamTheme.ink.opacity(0.74))
                     Button("ペアを設定する") { showPairing = true }
-                        .font(FoamFont.bold(15, relativeTo: .subheadline))
-                        .foregroundStyle(FoamTheme.ink)
-                        .foamButtonSurface()
+                        .buttonStyle(FoamCardActionStyle(fullWidth: false))
                 }
             }
         }
@@ -243,9 +239,7 @@ struct SettingsView: View {
                                 openURL(url)
                             }
                         }
-                        .font(FoamFont.bold(14, relativeTo: .subheadline))
-                        .foregroundStyle(FoamTheme.ink)
-                        .foamButtonSurface()
+                        .buttonStyle(FoamCardActionStyle(fullWidth: false))
                     }
                 }
 
@@ -260,9 +254,7 @@ struct SettingsView: View {
                                 openURL(url)
                             }
                         }
-                        .font(FoamFont.bold(14, relativeTo: .subheadline))
-                        .foregroundStyle(FoamTheme.ink)
-                        .foamButtonSurface()
+                        .buttonStyle(FoamCardActionStyle(fullWidth: false))
                     }
                 }
 
@@ -285,9 +277,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .font(FoamFont.bold(14, relativeTo: .subheadline))
-                    .foregroundStyle(FoamTheme.ink)
-                    .foamButtonSurface(wobble: false)
+                    .buttonStyle(FoamCardActionStyle(fullWidth: false))
                     .disabled(isAnySyncing || !state.isPaired)
                     .opacity((isAnySyncing || !state.isPaired) ? 0.5 : 1)
                 }
