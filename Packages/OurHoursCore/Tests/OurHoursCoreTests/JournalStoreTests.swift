@@ -28,8 +28,10 @@ struct JournalStoreTests {
         #expect(record.createdAt == original.createdAt && record.updatedAt >= original.updatedAt)
         #expect(record.endedAt == updatedEnd)
         #expect(try store.load() == updated)
-        #expect(try store.deleteManualRecord(id: original.id) == JournalSnapshot())
-        #expect(try otherStore.load() == JournalSnapshot())
+        let deleted = try store.deleteManualRecord(id: original.id)
+        #expect(deleted.manualRecords.isEmpty)
+        #expect(deleted.deletedManualRecords[original.id] != nil)
+        #expect(try otherStore.load() == deleted)
     }
 
     @Test func overridesAndMemosRoundTripAndCanBeCleared() throws {
@@ -45,7 +47,11 @@ struct JournalStoreTests {
         #expect(try store.setMemo(dayKey: dayKey, text: "\n\t ").dailyMemos.isEmpty)
         #expect(try store.setSessionOverride(sessionID: sessionID, action: .deleted)
             .sessionOverrides[sessionID]?.action == .deleted)
-        #expect(try store.clearSessionOverride(sessionID: sessionID) == JournalSnapshot())
+        let cleared = try store.clearSessionOverride(sessionID: sessionID)
+        #expect(cleared.manualRecords.isEmpty)
+        #expect(cleared.sessionOverrides.isEmpty)
+        #expect(cleared.dailyMemos.isEmpty)
+        #expect(cleared.deletedMemoDays[dayKey] != nil)
 
         try store.addManualRecord(pairID: nil, startedAt: start, endedAt: end)
         try store.setSessionOverride(sessionID: sessionID, action: .deleted)

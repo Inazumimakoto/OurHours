@@ -52,14 +52,37 @@ public struct JournalSnapshot: Codable, Sendable, Equatable {
     public var manualRecords: [ManualEncounterRecord]
     public var sessionOverrides: [UUID: SessionOverride]
     public var dailyMemos: [String: DailyMemo]
+    public var deletedManualRecords: [UUID: Date]
+    public var deletedMemoDays: [String: Date]
+
+    private enum CodingKeys: String, CodingKey {
+        case manualRecords
+        case sessionOverrides
+        case dailyMemos
+        case deletedManualRecords
+        case deletedMemoDays
+    }
 
     public init(
         manualRecords: [ManualEncounterRecord] = [],
         sessionOverrides: [UUID: SessionOverride] = [:],
-        dailyMemos: [String: DailyMemo] = [:]
+        dailyMemos: [String: DailyMemo] = [:],
+        deletedManualRecords: [UUID: Date] = [:],
+        deletedMemoDays: [String: Date] = [:]
     ) {
         self.manualRecords = manualRecords
         self.sessionOverrides = sessionOverrides
         self.dailyMemos = dailyMemos
+        self.deletedManualRecords = deletedManualRecords
+        self.deletedMemoDays = deletedMemoDays
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.manualRecords = try container.decodeIfPresent([ManualEncounterRecord].self, forKey: .manualRecords) ?? []
+        self.sessionOverrides = try container.decodeIfPresent([UUID: SessionOverride].self, forKey: .sessionOverrides) ?? [:]
+        self.dailyMemos = try container.decodeIfPresent([String: DailyMemo].self, forKey: .dailyMemos) ?? [:]
+        self.deletedManualRecords = try container.decodeIfPresent([UUID: Date].self, forKey: .deletedManualRecords) ?? [:]
+        self.deletedMemoDays = try container.decodeIfPresent([String: Date].self, forKey: .deletedMemoDays) ?? [:]
     }
 }

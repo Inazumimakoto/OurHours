@@ -18,6 +18,25 @@ struct SettingsView: View {
                 Text("記録").font(FoamFont.bold(13, relativeTo: .footnote))
             }
             Section {
+                LabeledContent("同期状態") {
+                    Text(model.historySyncStatusText)
+                        .font(FoamFont.medium(13, relativeTo: .caption))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("相手のBLE記録", value: "\(model.syncedPeerSessionCount)件")
+                Button("今すぐ記録・メモを同期") {
+                    Task { await model.syncSharedHistoryNow() }
+                }
+                .font(FoamFont.bold(15))
+                .disabled(model.isHistorySyncing || !model.snapshot.isPaired)
+                Text("片方しか検知できなかった BLE 記録・終了不明の自動補完・手動編集・一言メモを、ペアの共有鍵で E2EE 暗号化して CloudKit 経由で同期します。")
+                    .font(FoamFont.regular(12.5, relativeTo: .footnote))
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("ふたりで記録・メモを同期（CloudKit）").font(FoamFont.bold(13, relativeTo: .footnote))
+            }
+            Section {
                 Toggle("位置情報で取りこぼしを補完", isOn: Binding(
                     get: { model.locationMonitor.isEnabled },
                     set: { enabled in

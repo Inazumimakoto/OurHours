@@ -80,13 +80,13 @@ struct CalendarAggregatorTests {
         )
         let lastDay = try #require(october["2026-10-31"])
         let firstDay = try #require(november["2026-11-01"])
-        #expect(lastDay.slices.count == 3)
+        #expect(lastDay.slices.count == 1)
         #expect(lastDay.totalRecordedSeconds == 1_200)
-        #expect(firstDay.slices.count == 2)
+        #expect(firstDay.slices.count == 1)
         #expect(firstDay.totalRecordedSeconds == 1_260.5)
         #expect(firstDay.slices.allSatisfy { $0.sliceStart == midnight })
         #expect(firstDay.slices.first?.fullStart == start)
-        #expect(firstDay.slices.first?.durationSeconds == 1_200)
+        #expect(firstDay.slices.first?.durationSeconds == 1_260.5)
         #expect(EncounterCalendarAggregator.daySummary(
             for: end, autoSessions: autoSessions, journal: journal, calendar: tokyo
         ) == firstDay)
@@ -201,5 +201,103 @@ struct CalendarAggregatorTests {
         let d15 = try #require(midSummaries["2026-11-15"])
         #expect(!d15.continuesFromPreviousDay && !d15.continuesToNextDay)
         #expect(midSummaries["2026-11-16"] == nil)
+    }
+
+    @Test func coalescesShortGapBLESessionsAndRespectsOverridesAndPairs() throws {
+        let base = try date("2026-11-21T10:00:00+09:00")
+        let s1 = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: base, endedAt: base.addingTimeInterval(1_800),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        ) // 10:00-10:30
+        let s2 = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(2_160), // +6m -> 10:36-11:00
+            endedAt: base.addingTimeInterval(3_600),
+            status: .completed, connectionPath: .autoReconnect, startRole: .peripheral
+        )
+        let s3 = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(4_200), // exact 10m (600s) -> 11:10-11:40
+            endedAt: base.addingTimeInterval(6_000),
+            status: .completed, connectionPath: .autoReconnect, startRole: .central
+        )
+        let sFar = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(6_601), // 10m01s gap -> stays separate
+            endedAt: base.addingTimeInterval(7_800),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let otherPairID = UUID()
+        let otherPairNear = EncounterSession(
+            id: UUID(), pairID: otherPairID,
+            startedAt: base.addingTimeInterval(1_860), // 1m after s1, different pair
+            endedAt: base.addingTimeInterval(2_100),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+
+        let coalesced = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [s1, s2, s3, sFar, otherPairNear],
+            journal: JournalSnapshot()
+        )
+        #expect(coalesced.count == 3)
+
+        let mergedFirst = try #require(coalesced.first { Set($0.linkedSessionIDs) == [s1.id, s2.id, s3.id] })
+        #expect(mergedFirst.startedAt == s1.startedAt)
+        #expect(mergedFirst.endedAt == s3.endedAt)
+        #expect(coalesced.contains { $0.id == sFar.id })
+        #expect(coalesced.contains { $0.id == otherPairNear.id && $0.linkedSessionIDs == [otherPairNear.id] })
+
+        // Deleted session does not break or suppress neighbor; autoEdited stays exact without auto-merging
+        let jEdited = JournalSnapshot(
+            sessionOverrides: [
+                s2.id: SessionOverride(sessionID: s2.id, action: .deleted, updatedAt: base),
+                s1.id: SessionOverride(
+                    sessionID: s1.id,
+                    action: .edited(startedAt: base, endedAt: base.addingTimeInterval(1_920)),
+                    updatedAt: base
+                )
+            ]
+        )
+        let sNearEdited = EncounterSession(
+            id: UUID(), pairID: pairID,
+            startedAt: base.addingTimeInterval(2_220), // 5m after edited end 10:32
+            endedAt: base.addingTimeInterval(3_000),
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let afterOverride = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [s1, s2, sNearEdited],
+            journal: jEdited
+        )
+        #expect(afterOverride.count == 2)
+        #expect(afterOverride[0].source == .autoEdited(sessionID: s1.id))
+        #expect(afterOverride[0].endedAt == base.addingTimeInterval(1_920))
+        #expect(afterOverride[1].id == sNearEdited.id)
+
+        // UnknownEnd: duplicates within 10m collapse; unknown 4m before completed absorbs into it; 30m earlier remains unknownEnd
+        let uEarly = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: base.addingTimeInterval(-1_800), endedAt: nil,
+            status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central
+        ) // 09:30 (30m before s1)
+        let uDup1 = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: base.addingTimeInterval(-1_500), endedAt: nil,
+            status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central
+        ) // 09:35 (5m after uEarly -> collapses into uEarly)
+        let uBeforeS1 = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: base.addingTimeInterval(-240), endedAt: nil,
+            status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central
+        ) // 09:56 (4m before s1 -> absorbed into s1)
+        let unknownResolved = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [uEarly, uDup1, uBeforeS1, s1],
+            journal: JournalSnapshot()
+        )
+        #expect(unknownResolved.count == 2)
+        #expect(unknownResolved[0].status == .unknownEnd)
+        #expect(unknownResolved[0].startedAt == uEarly.startedAt)
+        #expect(Set(unknownResolved[0].linkedSessionIDs) == [uEarly.id, uDup1.id])
+
+        #expect(unknownResolved[1].status == .completed)
+        #expect(unknownResolved[1].startedAt == uBeforeS1.startedAt)
+        #expect(unknownResolved[1].endedAt == s1.endedAt)
+        #expect(Set(unknownResolved[1].linkedSessionIDs) == [uBeforeS1.id, s1.id])
     }
 }

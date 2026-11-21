@@ -1,13 +1,18 @@
 import OurHoursCore
 import SwiftUI
 
+private struct SelectedDayRoute: Identifiable {
+    let id = UUID()
+    let date: Date
+    let startAdding: Bool
+}
+
 struct CalendarView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var displayedMonth: Date
 
-    @State private var selected: Date?
-    @State private var adding = false
+    @State private var selectedRoute: SelectedDayRoute?
     @State private var gridWidth: CGFloat = 340
     @State private var monthEpoch = 0
     @State private var bubblesRevealed = true
@@ -50,7 +55,10 @@ struct CalendarView: View {
                         .font(FoamFont.bold(15, relativeTo: .subheadline))
                         .foamCloudSurface(isTogether: model.isTogetherNow, compact: true)
 
-                    Button { adding = true } label: {
+                    Button {
+                        let targetDate = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month) ? .now : currentFirst
+                        selectedRoute = SelectedDayRoute(date: targetDate, startAdding: true)
+                    } label: {
                         Image("FoamSettingsLather")
                             .resizable()
                             .scaledToFit()
@@ -71,7 +79,7 @@ struct CalendarView: View {
                         transitionDirection: transitionDirection,
                         reduceMotion: reduceMotion,
                         canTapDay: { isHorizontalDrag != true && !isAnimatingCommit && Date.now >= suppressDayTapUntil },
-                        onSelectDay: { selected = $0 }
+                        onSelectDay: { selectedRoute = SelectedDayRoute(date: $0, startAdding: false) }
                     )
                     .frame(width: gridWidth, alignment: .top)
                     .offset(x: -pageStride + dragOffset)
@@ -84,7 +92,7 @@ struct CalendarView: View {
                         transitionDirection: transitionDirection,
                         reduceMotion: reduceMotion,
                         canTapDay: { isHorizontalDrag != true && !isAnimatingCommit && Date.now >= suppressDayTapUntil },
-                        onSelectDay: { selected = $0 }
+                        onSelectDay: { selectedRoute = SelectedDayRoute(date: $0, startAdding: false) }
                     )
                     .frame(width: gridWidth, alignment: .top)
                     .offset(x: dragOffset)
@@ -97,7 +105,7 @@ struct CalendarView: View {
                         transitionDirection: transitionDirection,
                         reduceMotion: reduceMotion,
                         canTapDay: { isHorizontalDrag != true && !isAnimatingCommit && Date.now >= suppressDayTapUntil },
-                        onSelectDay: { selected = $0 }
+                        onSelectDay: { selectedRoute = SelectedDayRoute(date: $0, startAdding: false) }
                     )
                     .frame(width: gridWidth, alignment: .top)
                     .offset(x: pageStride + dragOffset)
@@ -154,11 +162,8 @@ struct CalendarView: View {
         .padding(.top, 62)
         .buttonStyle(.plain)
         .onDisappear { transitionTask?.cancel() }
-        .sheet(isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
-            if let selected { DayDetailSheet(date: selected) }
-        }
-        .sheet(isPresented: $adding) {
-            EncounterEditorSheet(mode: .add(calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month) ? .now : currentFirst))
+        .fullScreenCover(item: $selectedRoute) { route in
+            DayDetailSheet(date: route.date, startAdding: route.startAdding)
         }
     }
 

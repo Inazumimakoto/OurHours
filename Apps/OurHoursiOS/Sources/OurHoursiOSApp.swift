@@ -17,6 +17,7 @@ struct OurHoursiOSApp: App {
                     ProgressView()
                 }
             }
+            .preferredColorScheme(.light)
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
                     delegate.appModel?.handleForegroundActivation()
