@@ -3,17 +3,33 @@ import UIKit
 
 struct RootFoamView: View {
     let appModel: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab = FoamTab.home
     @State private var burst: FoamBurstEvent?
     @State private var lastBurstTimestamp = Date.distantPast
     @State private var showSettings = false
     @State private var showPairing = false
-    @State private var showOnboarding = false
+    @State private var showOnboardingReplay = false
     @State private var pendingOnboardingReplay = false
     @State private var month = Date.now
     @State private var pendingDayRoute: SelectedDayRoute?
 
     var body: some View {
+        Group {
+            if appModel.hasCompletedOnboarding {
+                mainContent
+            } else {
+                OnboardingView()
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: appModel.hasCompletedOnboarding)
+        .font(FoamFont.medium(16))
+        .foregroundStyle(FoamTheme.ink)
+        .fullScreenCover(isPresented: $showOnboardingReplay) { OnboardingView() }
+        .environment(appModel)
+    }
+
+    private var mainContent: some View {
         ZStack {
             FoamTheme.sky(together: false).ignoresSafeArea()
             FoamTheme.sky(together: true).ignoresSafeArea().opacity(appModel.isTogetherNow ? 1 : 0)
@@ -57,11 +73,6 @@ struct RootFoamView: View {
             }
             FoamTapBurstsOverlayView(burstEvent: burst).ignoresSafeArea()
         }
-        .font(FoamFont.medium(16))
-        .foregroundStyle(FoamTheme.ink)
-        .onAppear(perform: showOnboardingIfNeeded)
-        .onChange(of: appModel.hasCompletedOnboarding, showOnboardingIfNeeded)
-        .fullScreenCover(isPresented: $showOnboarding) { OnboardingView() }
         .sheet(isPresented: $showSettings, onDismiss: replayOnboardingIfPending) {
             NavigationStack {
                 SettingsView(onReplayOnboarding: {
@@ -72,17 +83,12 @@ struct RootFoamView: View {
             .font(FoamFont.medium(16))
         }
         .sheet(isPresented: $showPairing) { PairingView() }
-        .environment(appModel)
-    }
-
-    private func showOnboardingIfNeeded() {
-        if !appModel.hasCompletedOnboarding { showOnboarding = true }
     }
 
     private func replayOnboardingIfPending() {
         guard pendingOnboardingReplay else { return }
         pendingOnboardingReplay = false
-        showOnboarding = true
+        showOnboardingReplay = true
     }
 
     private func emitTabSplash(_ originX: CGFloat) {

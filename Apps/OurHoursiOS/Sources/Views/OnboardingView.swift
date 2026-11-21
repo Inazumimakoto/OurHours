@@ -147,7 +147,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("ふたりで一緒にいた時間を自動で残すアプリだよ！")
                     .font(FoamFont.bold(17, relativeTo: .headline))
-                Text("Bluetooth と位置情報（常に）を許可してね。位置情報は Bluetooth の届かない時間を補うだけで、地図に出たり誰かに見られたりしないから安心してね。")
+                Text("自動で記録するために Bluetooth と位置情報（常に）が必要なんだ。位置情報は Bluetooth の届かない時間を補うだけで、地図に出たり誰かに見られたりしないから安心してね。")
                     .font(FoamFont.regular(15, relativeTo: .subheadline))
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -242,6 +242,13 @@ private struct OnboardingPermissionCards: View {
                         .font(FoamFont.regular(14, relativeTo: .footnote))
 
                     let monitor = model.locationMonitor
+                    if !(monitor.authorizationStatus == .authorizedAlways && monitor.isEnabled && !monitor.isReducedAccuracyWarning) {
+                        Text("「Appの使用中は許可」のあと「常に許可」を選んでね（「1度だけ許可」だと「常に」にできません）")
+                            .font(FoamFont.regular(13, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     switch monitor.authorizationStatus {
                     case .authorizedAlways where monitor.isEnabled:
                         if monitor.isReducedAccuracyWarning {
@@ -254,6 +261,10 @@ private struct OnboardingPermissionCards: View {
                     case .authorizedWhenInUse where monitor.isEnabled:
                         Button("「常に」を許可する", action: monitor.enableAndRequestAuthorization)
                             .buttonStyle(FoamCardActionStyle())
+                        Text("ポップアップが出ない場合は「設定を開く」から「常に」に変更してね")
+                            .font(FoamFont.regular(12.5, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.72))
+                            .fixedSize(horizontal: false, vertical: true)
                         Button(action: openSettings) {
                             Text("設定を開く").underline()
                         }

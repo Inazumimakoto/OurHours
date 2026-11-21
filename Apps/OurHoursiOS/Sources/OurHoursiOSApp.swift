@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         configureAppearance()
         let engine = OurHoursBLEEngine(enableStateRestoration: true)
         // A fresh install has no managers to restore. Allow its first prompt to follow the notice.
-        if CBManager.authorization != .notDetermined || engine.currentSnapshot().isPaired {
+        if CBManager.authorization != .notDetermined {
             engine.start()
         }
         let model = AppModel(engine: engine)

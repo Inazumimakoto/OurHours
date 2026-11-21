@@ -199,32 +199,45 @@ struct PairingFlow: View {
                     .buttonStyle(FoamPrimaryActionStyle())
             }
 
-            ReleaseBubbleCard(title: "相手の招待で設定する", isTogether: model.isTogetherNow, seed: 2.7) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Button(onSkip == nil ? "同意してQRコードを読み取る" : "QRコードを読み取る", systemImage: "qrcode.viewfinder") {
-                        errorMessage = nil
-                        showScanner = true
-                    }
-                    .buttonStyle(FoamCardActionStyle())
+            VStack(alignment: .leading, spacing: 10) {
+                Text("相手の招待で設定する")
+                    .font(FoamFont.bold(13.5, relativeTo: .footnote))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.76))
+                    .padding(.horizontal, 6)
 
-                    DisclosureGroup("招待URLを貼り付けて設定") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            TextField("ourhours://…", text: $manualURL, axis: .vertical)
-                                .accessibilityLabel("招待URL")
-                                .keyboardType(.URL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .lineLimit(1...3)
-                                .textFieldStyle(.roundedBorder)
-                            Button(onSkip == nil ? "同意して招待URLで設定" : "招待URLで設定") { completePairing(manualURL) }
-                                .buttonStyle(FoamCardActionStyle())
-                                .disabled(manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                        .padding(.top, 10)
-                    }
-                    .font(FoamFont.medium(14, relativeTo: .subheadline))
-                    .tint(FoamTheme.ink)
+                Button(onSkip == nil ? "同意してQRコードを読み取る" : "QRコードを読み取る", systemImage: "qrcode.viewfinder") {
+                    errorMessage = nil
+                    showScanner = true
                 }
+                .buttonStyle(FoamPrimaryActionStyle())
+
+                DisclosureGroup("招待URLを貼り付けて設定") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        TextField("ourhours://…", text: $manualURL, axis: .vertical)
+                            .accessibilityLabel("招待URL")
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .lineLimit(1...3)
+                            .textFieldStyle(.roundedBorder)
+                        Button(onSkip == nil ? "同意して招待URLで設定" : "招待URLで設定") { completePairing(manualURL) }
+                            .buttonStyle(FoamCardActionStyle())
+                            .disabled(manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .padding(.top, 10)
+                }
+                .font(FoamFont.medium(14, relativeTo: .subheadline))
+                .tint(FoamTheme.ink)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.46))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.72), lineWidth: 1)
+                        }
+                )
             }
 
             if let onSkip {

@@ -58,7 +58,7 @@ final class AppModel {
         if userDefaults.object(forKey: DefaultsKey.onboarding) != nil {
             hasCompletedOnboarding = userDefaults.bool(forKey: DefaultsKey.onboarding)
         } else {
-            let completed = initialSnapshot.isPaired
+            let completed = initialSnapshot.isPaired && CBManager.authorization != .notDetermined
             hasCompletedOnboarding = completed
             userDefaults.set(completed, forKey: DefaultsKey.onboarding)
         }
