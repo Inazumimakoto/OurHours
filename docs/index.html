@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OurHours — ふたりで過ごした時間を、そっと残す。</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #242947;
+      --ink-muted: rgba(36, 41, 71, 0.74);
+      --card-bg: rgba(255, 255, 255, 0.72);
+      --card-border: rgba(255, 255, 255, 0.92);
+      --accent: #3d6fb8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(155deg, #ffe4cf 0%, #fce8d8 48%, #f8e8f2 100%);
+      line-height: 1.75;
+    }
+    .wrap {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 40px 20px 64px;
+    }
+    .hero {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .bubbles {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+    }
+    .bubble {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 20px rgba(36, 41, 71, 0.08);
+    }
+    .bubble.a {
+      background: radial-gradient(circle at 30% 30%, #def6ff, #96d1fc);
+      margin-right: -12px;
+      z-index: 1;
+    }
+    .bubble.b {
+      background: radial-gradient(circle at 30% 30%, #ffe8f2, #ffb8d4);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 5vw, 38px);
+      letter-spacing: -0.02em;
+    }
+    .tagline {
+      margin: 0 auto;
+      max-width: 520px;
+      font-size: 16px;
+      color: var(--ink-muted);
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1.5px solid var(--card-border);
+      border-radius: 24px;
+      padding: 24px;
+      margin-bottom: 18px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(36, 41, 71, 0.06);
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+    p { margin: 0 0 10px; }
+    p:last-child { margin-bottom: 0; }
+    .links {
+      display: flex;
+      justify-content: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-top: 24px;
+    }
+    .links a {
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14.5px;
+      padding: 10px 20px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.78);
+      border: 1.5px solid rgba(255, 255, 255, 0.95);
+      box-shadow: 0 6px 16px rgba(36, 41, 71, 0.06);
+    }
+    .links a:hover { background: #ffffff; }
+    footer {
+      text-align: center;
+      font-size: 13px;
+      color: var(--ink-muted);
+      margin-top: 32px;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div class="bubbles" aria-hidden="true">
+        <div class="bubble a"></div>
+        <div class="bubble b"></div>
+      </div>
+      <h1>OurHours</h1>
+      <p class="tagline">ふたりで一緒にいた時間を、シャボン玉みたいにふんわり自動記録。</p>
+    </section>
+
+    <section class="card">
+      <h2>ポケットに入れたまま、自動でカウント</h2>
+      <p>
+        Bluetooth と暗号化した位置滞在補完で、パートナーと近くにいる時間を自動記録。会っている時間が長くなるほど、ホーム画面のシャボン玉もどんどん大きくふくらみます。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>ふたりの思い出をカレンダーに</h2>
+      <p>
+        一緒に過ごした合計時間、1日のひとことメモ、記念日・誕生日のマークをカレンダーと 24 時間タイムラインで振り返り。手動での追加・結合・1 分単位の調整もかんたんです。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>ふたりだけの安心プライバシー</h2>
+      <p>
+        地図や現在地の座標は表示しません。すべての記録とメモは QR コードの共有鍵でエンドツーエンド暗号化し、あなたとパートナーの Apple iCloud Private Database だけで同期します。
+      </p>
+    </section>
+
+    <div class="links">
+      <a href="support.html">サポート・使い方</a>
+      <a href="privacy.html">プライバシーポリシー</a>
+    </div>
+
+    <footer>
+      &copy; 2026 OurHours &middot; <a href="mailto:inazumimakoto@gmail.com">inazumimakoto@gmail.com</a>
+    </footer>
+  </main>
+</body>
+</html>

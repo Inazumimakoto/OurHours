@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>プライバシーポリシー | OurHours</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #242947;
+      --ink-muted: rgba(36, 41, 71, 0.74);
+      --card-bg: rgba(255, 255, 255, 0.74);
+      --card-border: rgba(255, 255, 255, 0.92);
+      --accent: #3d6fb8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(155deg, #ffe4cf 0%, #fce8d8 48%, #f8e8f2 100%);
+      line-height: 1.75;
+    }
+    .wrap {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    nav {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    nav a {
+      color: var(--ink);
+      text-decoration: none;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(255, 255, 255, 0.85);
+    }
+    nav a:hover { background: rgba(255, 255, 255, 0.85); }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(24px, 4vw, 32px);
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      margin: 0;
+      font-size: 14px;
+      color: var(--ink-muted);
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1.5px solid var(--card-border);
+      border-radius: 24px;
+      padding: 24px 24px;
+      margin-bottom: 18px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(36, 41, 71, 0.06);
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+    p { margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+    ul {
+      margin: 8px 0 0;
+      padding-left: 20px;
+    }
+    li { margin-bottom: 6px; }
+    a { color: var(--accent); }
+    .lang-divider {
+      margin: 36px 0 24px;
+      border: 0;
+      border-top: 1px solid rgba(36, 41, 71, 0.14);
+    }
+    footer {
+      text-align: center;
+      font-size: 13px;
+      color: var(--ink-muted);
+      margin-top: 28px;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <nav aria-label="サイトナビゲーション">
+        <a href="index.html">OurHours トップ</a>
+        <a href="privacy.html">プライバシーポリシー</a>
+        <a href="support.html">サポート・お問い合わせ</a>
+      </nav>
+      <h1>プライバシーポリシー</h1>
+      <p class="subtitle">制定・最終改定日：2026年11月21日</p>
+    </header>
+
+    <section class="card">
+      <h2>1. 基本方針</h2>
+      <p>
+        OurHours（以下「本アプリ」）は、パートナー同士が一緒に過ごした時間を安心して記録・共有できるよう、プライバシー保護を最優先に設計されています。開発者自身が運営する独自サーバーでユーザーの記録や位置情報を収集・閲覧することはありません。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>2. 取り扱うデータと利用目的</h2>
+      <ul>
+        <li><strong>Bluetooth 近接記録（日時・継続時間）</strong>：ペア設定した相手の端末と近くにいる時間帯を自動記録・集計するために使用します。</li>
+        <li><strong>位置滞在ログ（任意・デフォルト有効／設定でオフ可能）</strong>：Bluetooth が届きにくいバックグラウンド環境での取りこぼしを防ぐため、おおよその滞在履歴をペア間でのみ突き合わせて「一緒にいた時間」の補完に使用します。地図や位置座標をアプリ画面に表示することはありません。直近の滞在座標ログは最大14日分で自動削除されます。</li>
+        <li><strong>ユーザーが入力する記録・プロフィール</strong>：手動で追加・編集した時間記録、1日のひとことメモ、記念日、誕生日、シャボン玉のカラー設定を、カレンダー表示およびパートナー間同期のために保存します。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>3. エンドツーエンド暗号化（E2EE）と保存場所</h2>
+      <p>
+        ペア設定時に QR コードまたは招待 URL で交換する 256-bit の共有鍵を用い、Apple CryptoKit（AES-GCM＋HKDF）によって端末内で暗号化したうえで同期を行います。
+      </p>
+      <p>
+        同期データはユーザー自身の Apple iCloud Private Database（<code>CKShare</code> によるペア専用共有ゾーン）およびオフライン移行用の暗号化ブートストラップ領域を通じて送受信されます。復号鍵はペアの端末内の Keychain にのみ保管されるため、開発者や第三者が記録内容を復号・閲覧することはできません。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>4. 第三者提供・広告・解析ツール</h2>
+      <p>
+        本アプリは、広告 SDK、トラッキング SDK、行動解析ツールを一切組み込んでおらず、ユーザーデータを第三者に販売・共有・提供することはありません（アプリ間トラッキングも行いません）。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>5. データの削除・管理</h2>
+      <ul>
+        <li>アプリ内の「設定」→「ペア連携を解除」を実行すると、以降の認証・同期が即座に停止し、iCloud 上の共有ゾーン／共有レコードの削除が行われます。</li>
+        <li>端末内の履歴はアプリ内の「ログを消去」またはアプリのアンインストールによって削除できます。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>6. お問い合わせ</h2>
+      <p>
+        本ポリシーやデータの取り扱いに関するご質問・ご要望は、下記までご連絡ください。
+      </p>
+      <ul>
+        <li>メール：<a href="mailto:inazumimakoto@gmail.com">inazumimakoto@gmail.com</a></li>
+        <li>GitHub Issues：<a href="https://github.com/Inazumimakoto/OurHours/issues">https://github.com/Inazumimakoto/OurHours/issues</a></li>
+      </ul>
+    </section>
+
+    <hr class="lang-divider">
+
+    <section class="card" lang="en">
+      <h2>Privacy Policy Summary (English)</h2>
+      <p>
+        <strong>OurHours</strong> is built to let couples record shared time together privately. All shared encounter logs, daily memos, anniversaries, and optional location proximity logs (never displayed as a map or coordinates, retained up to 14 days for raw logs) are encrypted end-to-end on-device using Apple CryptoKit (AES-GCM with HKDF-derived keys from a QR-exchanged 256-bit shared secret) and synced through your own Apple iCloud Private Database (<code>CKShare</code> shared zone).
+      </p>
+      <p>
+        The developer has no access to your decryption keys or personal data, uses no third-party analytics or ad SDKs, and does not track users across apps or websites. You can stop syncing and remove cloud records at any time from Settings &rarr; Unpair, or by deleting the app.
+      </p>
+      <p>
+        Contact: <a href="mailto:inazumimakoto@gmail.com">inazumimakoto@gmail.com</a> &middot; <a href="https://github.com/Inazumimakoto/OurHours/issues">GitHub Issues</a>
+      </p>
+    </section>
+
+    <footer>
+      &copy; 2026 OurHours
+    </footer>
+  </main>
+</body>
+</html>

@@ -10,7 +10,9 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @State private var showPairing = false
     @State private var confirmUnpair = false
+    #if DEBUG
     @State private var confirmClear = false
+    #endif
 
     private var appVersionLabel: String {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -37,6 +39,7 @@ struct SettingsView: View {
                         releasePairingSection
                         releaseProfileSection
                         releaseRecordingAndSyncSection(state: state)
+                        releaseSupportSection
                         releaseVersionRow
                         if state.isPaired {
                             Button("ペア連携を解除（機種変更・再設定）", role: .destructive) {
@@ -53,7 +56,9 @@ struct SettingsView: View {
                                 Text("この端末での今後の認証と自動記録を直ちに停止します。双方の端末に保存済みのログは残ります。機種変更時は新しいiPhoneで新規の招待を作り、相手と再設定してください。再設定後、旧端末の鍵では認証できません。")
                             }
                         }
+                        #if DEBUG
                         debugSection(state: state)
+                        #endif
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 6)
@@ -333,6 +338,61 @@ struct SettingsView: View {
         }
     }
 
+    private var releaseSupportSection: some View {
+        ReleaseBubbleCard(title: "サポート・規約", isTogether: model.isTogetherNow, seed: 3.5) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let onReplayOnboarding {
+                    Button(action: onReplayOnboarding) {
+                        HStack(spacing: 8) {
+                            Text("はじめかたを見る")
+                                .font(FoamFont.bold(15, relativeTo: .subheadline))
+                                .foregroundStyle(FoamTheme.ink)
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.45))
+                                .accessibilityHidden(true)
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider().overlay(FoamTheme.ink.opacity(0.08))
+                }
+
+                supportExternalLink(
+                    title: "プライバシーポリシー",
+                    url: URL(string: "https://inazumimakoto.github.io/OurHours/privacy.html")!
+                )
+
+                Divider().overlay(FoamTheme.ink.opacity(0.08))
+
+                supportExternalLink(
+                    title: "サポート・お問い合わせ",
+                    url: URL(string: "https://inazumimakoto.github.io/OurHours/support.html")!
+                )
+            }
+        }
+    }
+
+    private func supportExternalLink(title: String, url: URL) -> some View {
+        Link(destination: url) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(FoamFont.bold(15, relativeTo: .subheadline))
+                    .foregroundStyle(FoamTheme.ink)
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.45))
+                    .accessibilityHidden(true)
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+    }
+
     private var releaseVersionRow: some View {
         HStack {
             Text("バージョン")
@@ -360,6 +420,7 @@ struct SettingsView: View {
 
     // MARK: - Region 2: Plain Debug Section (Unstyled Developer Controls)
 
+    #if DEBUG
     @ViewBuilder
     private func debugSection(state: EngineSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -544,6 +605,7 @@ struct SettingsView: View {
                 .multilineTextAlignment(.trailing)
         }
     }
+    #endif
 }
 
 private struct PartnerNicknameEditView: View {
@@ -883,6 +945,7 @@ struct ReleaseBubbleCard<Content: View>: View {
     }
 }
 
+#if DEBUG
 private struct StatusBadge: View {
     let title: String
     let active: Bool
@@ -894,3 +957,4 @@ private struct StatusBadge: View {
             .background(active ? Color.green.opacity(0.18) : Color.secondary.opacity(0.12), in: Capsule())
     }
 }
+#endif

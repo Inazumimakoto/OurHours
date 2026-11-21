@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>サポート・お問い合わせ | OurHours</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #242947;
+      --ink-muted: rgba(36, 41, 71, 0.74);
+      --card-bg: rgba(255, 255, 255, 0.74);
+      --card-border: rgba(255, 255, 255, 0.92);
+      --accent: #3d6fb8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+      color: var(--ink);
+      background: linear-gradient(155deg, #ffe4cf 0%, #fce8d8 48%, #f8e8f2 100%);
+      line-height: 1.75;
+    }
+    .wrap {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    nav {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    nav a {
+      color: var(--ink);
+      text-decoration: none;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(255, 255, 255, 0.85);
+    }
+    nav a:hover { background: rgba(255, 255, 255, 0.85); }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(24px, 4vw, 32px);
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      margin: 0;
+      font-size: 14px;
+      color: var(--ink-muted);
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1.5px solid var(--card-border);
+      border-radius: 24px;
+      padding: 24px;
+      margin-bottom: 18px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(36, 41, 71, 0.06);
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+    h3 {
+      margin: 14px 0 4px;
+      font-size: 15.5px;
+    }
+    h3:first-of-type { margin-top: 4px; }
+    p { margin: 0 0 10px; }
+    p:last-child { margin-bottom: 0; }
+    ul {
+      margin: 8px 0 0;
+      padding-left: 20px;
+    }
+    li { margin-bottom: 6px; }
+    a { color: var(--accent); }
+    .lang-divider {
+      margin: 36px 0 24px;
+      border: 0;
+      border-top: 1px solid rgba(36, 41, 71, 0.14);
+    }
+    footer {
+      text-align: center;
+      font-size: 13px;
+      color: var(--ink-muted);
+      margin-top: 28px;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <nav aria-label="サイトナビゲーション">
+        <a href="index.html">OurHours トップ</a>
+        <a href="privacy.html">プライバシーポリシー</a>
+        <a href="support.html">サポート・お問い合わせ</a>
+      </nav>
+      <h1>OurHours サポート</h1>
+      <p class="subtitle">ふたりで過ごした時間を、そっと残す。</p>
+    </header>
+
+    <section class="card">
+      <h2>ペア設定のしかた（1ステップ）</h2>
+      <p>
+        1人目が「招待QRコードを作成」を押し、2人目が「QRコードを読み取る」でスキャンするだけで設定が完了します。同じ手順で iCloud Private DB 共有スペースも自動で接続されます。
+      </p>
+      <p>
+        ※ いずれか一方または両方がオフラインでも Bluetooth ペア設定は完了でき、オンライン復帰後に同期スペースへ自動移行します。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>自動記録を安定させるポイント</h2>
+      <ul>
+        <li><strong>アプリを終了（タスクキル）しないでください</strong>：App スイッチャーから上にスワイプして完全終了すると、バックグラウンドの自動記録が止まります。通常通りホーム画面へ戻したままにしておくと安定します。</li>
+        <li><strong>Bluetooth をオン・許可</strong>：設定アプリで OurHours の Bluetooth を許可してください。</li>
+        <li><strong>位置情報は「常に許可」（＋正確な位置情報）がおすすめ</strong>：ポケットやスリープ時など Bluetooth が途切れやすい場面の取りこぼしを、暗号化した滞在ログで補完します。地図や座標の画面表示はありません。</li>
+        <li><strong>iCloud にサインイン</strong>：記録・メモ・記念日・色テーマをパートナーと自動同期するために iCloud を使用します。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>よくある質問（FAQ）</h2>
+      <h3>Q. 相手に位置情報や現在地が見えてしまいませんか？</h3>
+      <p>
+        見えません。地図表示やリアルタイム位置共有機能はなく、端末内で暗号化した滞在時間のみを突き合わせて「一緒にいた時間」の補完に使います。
+      </p>
+
+      <h3>Q. 記録の時間をあとから直せますか？</h3>
+      <p>
+        はい。カレンダーで日付を選び、＋ボタンからの手動追加や、各区間のタップ・開始/終了ハンドルのドラッグ・時刻ホイールから 1 分単位で編集・結合・削除できます。
+      </p>
+
+      <h3>Q. 機種変更や再設定をしたいときは？</h3>
+      <p>
+        アプリ内の「設定」一番下にある「ペア連携を解除（機種変更・再設定）」から解除したうえ、新しい端末で再度 QR コードの招待を行ってください（ローカルに保存されたログは端末に残ります）。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>お問い合わせ</h2>
+      <p>不具合のご報告、ご要望、その他のお問い合わせは以下の窓口からお気軽にご連絡ください。</p>
+      <ul>
+        <li>メール：<a href="mailto:inazumimakoto@gmail.com">inazumimakoto@gmail.com</a></li>
+        <li>GitHub Issues：<a href="https://github.com/Inazumimakoto/OurHours/issues">https://github.com/Inazumimakoto/OurHours/issues</a></li>
+      </ul>
+    </section>
+
+    <hr class="lang-divider">
+
+    <section class="card" lang="en">
+      <h2>Support Summary (English)</h2>
+      <p>
+        To pair, one partner taps <strong>Create Invite QR</strong> and the other scans it. Keep OurHours open in the background (do not force-quit it from the App Switcher), keep Bluetooth enabled, sign in to iCloud for Private DB syncing, and optionally allow Always Location for reliable background coverage without showing any map or coordinates.
+      </p>
+      <p>
+        Contact: <a href="mailto:inazumimakoto@gmail.com">inazumimakoto@gmail.com</a> &middot; <a href="https://github.com/Inazumimakoto/OurHours/issues">GitHub Issues</a>
+      </p>
+    </section>
+
+    <footer>
+      &copy; 2026 OurHours &middot; <a href="privacy.html">プライバシーポリシー</a>
+    </footer>
+  </main>
+</body>
+</html>
