@@ -48,6 +48,7 @@ struct HomeView: View {
                 isPaired: model.snapshot.isPaired,
                 localColor: model.localBubbleColor,
                 partnerColor: model.partnerBubbleColor,
+                activeSessionStartDate: model.activeSessionStartDate,
                 onTapBurst: onBurst
             )
             Spacer()

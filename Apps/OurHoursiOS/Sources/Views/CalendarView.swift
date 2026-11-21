@@ -559,8 +559,7 @@ private struct CalendarDayLabelCell: View {
     var body: some View {
         let hasRecord = (summary?.bubbleIntensity ?? .none) != .none
         let offsets = badgeOffsets
-        let diameter: CGFloat = badges.count <= 1 ? 15 : 13
-        let symbolSize: CGFloat = badges.count <= 1 ? 9.5 : 8
+        let symbolSize: CGFloat = badges.count <= 1 ? 10.5 : 9.0
 
         ZStack {
             Text("\(day)")
@@ -571,7 +570,7 @@ private struct CalendarDayLabelCell: View {
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
 
             ForEach(Array(badges.prefix(offsets.count).enumerated()), id: \.element.id) { index, badge in
-                badgeIcon(badge, diameter: diameter, symbolSize: symbolSize)
+                badgeIcon(badge, symbolSize: symbolSize)
                     .offset(x: offsets[index].x, y: offsets[index].y)
             }
 
@@ -596,29 +595,25 @@ private struct CalendarDayLabelCell: View {
     private var badgeOffsets: [CGPoint] {
         if summary?.hasUnknownEnd == true {
             return [
-                CGPoint(x: -14, y: -14),
-                CGPoint(x: -14, y: 14),
-                CGPoint(x: 14, y: 14),
+                CGPoint(x: -13, y: -13),
+                CGPoint(x: -13, y: 13),
+                CGPoint(x: 13, y: 13),
                 CGPoint(x: -14, y: 0)
             ]
         }
         return [
-            CGPoint(x: -14, y: -14),
-            CGPoint(x: 14, y: -14),
-            CGPoint(x: -14, y: 14),
-            CGPoint(x: 14, y: 14)
+            CGPoint(x: -13, y: -13),
+            CGPoint(x: 13, y: -13),
+            CGPoint(x: -13, y: 13),
+            CGPoint(x: 13, y: 13)
         ]
     }
 
-    private func badgeIcon(_ badge: ResolvedSpecialDayBadge, diameter: CGFloat, symbolSize: CGFloat) -> some View {
-        Circle()
-            .fill(Color.white.opacity(0.84))
-            .frame(width: diameter, height: diameter)
-            .overlay {
-                Image(systemName: badge.symbolName)
-                    .font(.system(size: symbolSize, weight: .bold))
-                    .foregroundStyle(badge.tint)
-            }
+    private func badgeIcon(_ badge: ResolvedSpecialDayBadge, symbolSize: CGFloat) -> some View {
+        Image(systemName: badge.symbolName)
+            .font(.system(size: symbolSize, weight: .bold))
+            .foregroundStyle(badge.tint)
+            .shadow(color: .white.opacity(0.75), radius: 1.4, x: 0, y: 0)
             .accessibilityHidden(true)
     }
 }
