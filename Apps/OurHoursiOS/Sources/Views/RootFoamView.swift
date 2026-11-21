@@ -14,6 +14,25 @@ struct RootFoamView: View {
     @State private var month = Date.now
     @State private var pendingDayRoute: SelectedDayRoute?
 
+    #if DEBUG
+    init(appModel: AppModel) {
+        self.appModel = appModel
+        switch ScreenshotScene.current {
+        case .calendar, .dayDetail:
+            _tab = State(initialValue: .calendar)
+            _month = State(initialValue: ScreenshotDemo.demoMonthDate)
+            if ScreenshotScene.current == .dayDetail {
+                _pendingDayRoute = State(initialValue: SelectedDayRoute(
+                    date: ScreenshotDemo.demoDayDate, startAdding: false, focusEncounterID: nil
+                ))
+            }
+        case .settings: _showSettings = State(initialValue: true)
+        case .pairing: _showPairing = State(initialValue: true)
+        case .home, nil: break
+        }
+    }
+    #endif
+
     var body: some View {
         Group {
             if appModel.hasCompletedOnboarding {

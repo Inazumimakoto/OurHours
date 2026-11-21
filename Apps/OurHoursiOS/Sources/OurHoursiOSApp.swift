@@ -37,6 +37,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         configureAppearance()
+        #if DEBUG
+        if let scene = ScreenshotScene.current {
+            appModel = ScreenshotDemo.makeAppModel(for: scene)
+            return true
+        }
+        #endif
         let engine = OurHoursBLEEngine(enableStateRestoration: true)
         // A fresh install has no managers to restore. Allow its first prompt to follow the notice.
         if CBManager.authorization != .notDetermined {

@@ -1,14 +1,31 @@
 import CloudKit
 import CoreBluetooth
+import CoreLocation
 import Observation
 import OurHoursCore
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+@MainActor
+protocol LocationMonitoring {
+    var authorizationStatus: CLAuthorizationStatus { get }
+    var isEnabled: Bool { get }
+    var needsSettingsGuidance: Bool { get }
+    var statusDescription: String { get }
+    var isReducedAccuracyWarning: Bool { get }
+    var lastCaptureDate: Date? { get }
+    func startIfAuthorized()
+    func enableAndRequestAuthorization()
+    func disable()
+    func requestFreshFix(source: LocationSampleSource)
+}
+
+extension LocationPresenceMonitor: LocationMonitoring {}
+
 @MainActor @Observable
 final class AppModel {
-    private enum DefaultsKey {
+    enum DefaultsKey {
         static let onboarding = "ourhours.hasCompletedOnboarding"
         static let color = "ourhours.localBubbleColor"
         static let birthday = "ourhours.localBirthday"
@@ -60,7 +77,11 @@ final class AppModel {
 
     private let locationStore: LocationTimelineStore
     private let locationSync: CloudKitLocationSync
-    let locationMonitor: LocationPresenceMonitor
+    #if DEBUG
+    private let isScreenshotDemo: Bool
+    var screenshotFixedActiveSessionStart: Date?
+    #endif
+    let locationMonitor: any LocationMonitoring
     private(set) var locationMatchedSessions: [LocationMatchedSession] = []
     private(set) var locationSyncState: LocationSyncState = .idle
 
@@ -71,8 +92,12 @@ final class AppModel {
         historySync: CloudKitHistorySync = CloudKitHistorySync(),
         locationStore: LocationTimelineStore = LocationTimelineStore(),
         locationSync: CloudKitLocationSync = CloudKitLocationSync(),
+        locationMonitor: (any LocationMonitoring)? = nil,
         userDefaults: UserDefaults = .standard
     ) {
+        #if DEBUG
+        isScreenshotDemo = locationMonitor is ScreenshotLocationMonitor
+        #endif
         self.userDefaults = userDefaults
         let initialSnapshot = engine.currentSnapshot()
         snapshot = initialSnapshot
@@ -104,7 +129,8 @@ final class AppModel {
         var sink: (@MainActor (LocationVisitRecord, Bool) -> Void)?
         var pointSink: (@MainActor (LocationPointSample) -> Void)?
 
-        self.locationMonitor = LocationPresenceMonitor(
+        self.locationMonitor = locationMonitor ?? LocationPresenceMonitor(
+            defaults: userDefaults,
             onVisit: { visit, arrivalUnknown in sink?(visit, arrivalUnknown) },
             onPoint: { point in pointSink?(point) },
             onWake: { [weak engine] source in
@@ -142,6 +168,13 @@ final class AppModel {
             self?.handleCapturedPoint(point)
         }
 
+        #if DEBUG
+        if isScreenshotDemo {
+            pairSpaceStatus = .connected(scope: .privateDB, shareURL: initialSnapshot.pairConfiguration?.cloudShareURL, sameAppleID: false)
+            historySyncState = .synced(.now, peerSessions: 0)
+            return
+        }
+        #endif
         let snapshots = engine.snapshotStream()
         subscription = Task { [weak self] in
             for await publishedSnapshot in snapshots {
@@ -271,6 +304,9 @@ final class AppModel {
     }
 
     func requestBluetoothPermission() {
+        #if DEBUG
+        if isScreenshotDemo { return }
+        #endif
         engine.start()
         refreshPermissionStates()
     }
@@ -283,7 +319,10 @@ final class AppModel {
 
     var isTogetherNow: Bool { activeSessionStartDate != nil }
     var activeSessionStartDate: Date? {
-        EncounterCalendarAggregator.coalescedActiveSessionStart(
+        #if DEBUG
+        if let screenshotFixedActiveSessionStart { return screenshotFixedActiveSessionStart }
+        #endif
+        return EncounterCalendarAggregator.coalescedActiveSessionStart(
             autoSessions: snapshot.sessions,
             peerSessions: activePairPeerSessions,
             locationSessions: locationMatchedSessions,
@@ -657,6 +696,9 @@ final class AppModel {
     }
 
     private func configure(_ configuration: PairConfiguration) throws {
+        #if DEBUG
+        if isScreenshotDemo { throw PairSetupError.saveFailed }
+        #endif
         let previous = snapshot.pairConfiguration
         engine.configurePair(configuration)
         snapshot = engine.currentSnapshot()
@@ -709,6 +751,9 @@ final class AppModel {
     }
 
     func unpair() {
+        #if DEBUG
+        if isScreenshotDemo { return }
+        #endif
         pendingExternalShareMetadata = nil
         let previousConfig = snapshot.pairConfiguration
         let previousContext = activePairSpaceContext
@@ -807,6 +852,9 @@ final class AppModel {
     }
 
     func handleForegroundActivation() {
+        #if DEBUG
+        if isScreenshotDemo { return }
+        #endif
         refreshPermissionStates()
         engine.handleForegroundActivation()
         locationMonitor.startIfAuthorized()
@@ -838,6 +886,9 @@ final class AppModel {
 
     @discardableResult
     func syncSharedHistoryNow() async -> HistorySyncOutcome? {
+        #if DEBUG
+        if isScreenshotDemo { return nil }
+        #endif
         guard let config = snapshot.pairConfiguration else { return nil }
         if let historySyncTask { return await historySyncTask.value }
         let generation = pairGeneration
@@ -1004,6 +1055,9 @@ final class AppModel {
     }
 
     func handleAcceptedExternalShare(_ metadata: CKShare.Metadata) {
+        #if DEBUG
+        if isScreenshotDemo { return }
+        #endif
         guard let config = snapshot.pairConfiguration else {
             pendingExternalShareMetadata = metadata
             return

@@ -57,7 +57,9 @@ struct SettingsView: View {
                             }
                         }
                         #if DEBUG
-                        debugSection(state: state)
+                        if ScreenshotScene.current == nil {
+                            debugSection(state: state)
+                        }
                         #endif
                     }
                     .padding(.horizontal, 18)

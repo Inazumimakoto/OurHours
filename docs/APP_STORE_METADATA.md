@@ -9,7 +9,7 @@
 - **Version**: `1.0.0` (Build `1`)
 - **Primary Category**: ライフスタイル（Lifestyle）
 - **Secondary Category**: ユーティリティ（Utilities）
-- **Age Rating**: `4+`（非該当をすべて「なし」）
+- **Age Rating**: `4+`（提出時のアンケート回答に基づき確認）
 - **Support URL**: `https://inazumimakoto.github.io/OurHours/support.html`
 - **Marketing URL**: `https://inazumimakoto.github.io/OurHours/`
 - **Privacy Policy URL**: `https://inazumimakoto.github.io/OurHours/privacy.html`
@@ -18,72 +18,66 @@
 
 ## 2. App Store テキスト（日本語）
 
-### Subtitle（30文字以内 — 現在15文字）
-`ふたりで過ごした時間を、そっと残す`
+### Subtitle（30文字以内）
 
-### Promotional Text（170文字以内 — 現在107文字）
-`Bluetoothと暗号化ログで、ふたりが一緒にいた時間を自動記録。会っている間はホームのシャボン玉がぐんぐん成長し、カレンダーや1日のメモで思い出をやさしく振り返れます。`
+`ふたりで過ごした時間を自動で記録`
 
-### Keywords（100文字以内 — 現在86文字）
-`カップル,ペア,記念日,タイマー,時間記録,カレンダー,思い出,日記,プライバシー,同棲,恋人,デート`
+### Promotional Text（170文字以内）
+
+`会っている間は、ホーム画面にふたりのシャボン玉が並び、一緒に過ごした時間に合わせて大きくなります。カレンダーで日ごとの合計を確認し、その日のひとことメモを相手と共有できます。`
+
+### Keywords（100バイト以内）
+
+`カップル,ペア,記念日,タイマー,カレンダー,日記,同棲,恋人,デート`
 
 ### Description（説明文）
+
 ```text
-ポケットに入れたまま、ふたりが一緒にいた時間をふんわり記録。
-OurHours（アワーアワーズ）は、パートナーと過ごした時間をシャボン玉のようにやさしく残せる、ふたり専用の時間ログアプリです。
+デートの帰りに、今日は何時間一緒にいたかを確認できます。OurHoursは、ペア設定した2台のiPhoneが近くにいる時間をBluetoothで自動記録するアプリです。
 
-■ 会っている時間が見えて、楽しくなる
-・Bluetooth の近接通信（＋暗号化した位置滞在補完）で、一緒にいる時間を自動でカウント
-・一緒にいる時間が長くなるほど、ホーム画面のシャボン玉キャラクターがぐんぐん大きく成長
-・タップするとシャボン玉がぽわんと弾けて、記録中の時間や付き合った日数（「付き合って◯日目」）を確認できます
+■ 会っている時間をホームで確認
+一緒にいる間はタイマーが進み、ふたりのシャボン玉が少しずつ大きくなります。記念日を登録すると、付き合って何日目かもわかります。
 
-■ ふたりのカレンダー＆24時間タイムライン
-・月別カレンダーと日別の時間合計、記念日・誕生日のマークをひと目で確認
-・1日の「ひとことメモ」を記入して、パートナーと共有
-・タイムラインのバーを長押しドラッグしたり、時刻ホイールを回したりして 1 分単位で編集・結合・手動追加も可能
+■ カレンダーで日ごとに振り返る
+カレンダーには日ごとの合計時間と、記念日や誕生日のマークが並びます。日付をタップすると、会っていた時間帯を24時間のタイムラインで確認できます。開始・終了時刻は1分単位で編集でき、記録の追加や結合もできます。ひとことメモには、一緒に行った場所や観た映画などを書いて共有できます。
 
-■ ふたりだけの安心プライバシー設計
-・地図や現在地の座標を画面に表示したり、リアルタイム位置共有したりしません
-・QR コード（1ステップ）で 256-bit の鍵を交換し、すべての同期データを端末内でエンドツーエンド暗号化（Apple CryptoKit AES-GCM）
-・保存先はあなたとパートナーの Apple iCloud Private Database 共有ゾーン（CKShare）のみ。開発者がサーバーで記録を閲覧することはできません
-・広告なし・第三者トラッキングなし
+■ ふたりの記録を暗号化して同期
+QRコードでペアを設定すると、時間の記録とメモを端末で暗号化し、iCloud経由で相手と同期します。位置情報による記録補完は任意です。地図や座標の表示、現在地のリアルタイム共有はありません。広告や第三者によるトラッキングもありません。
 ```
 
 ---
 
 ## 3. App Store テキスト（English / Optional Localization）
 
-### Subtitle (<= 30 chars)
-`Track shared hours together`
+### Subtitle (30 characters max)
 
-### Promotional Text (<= 170 chars)
-`Automatically log time spent together with Bluetooth and encrypted proximity backup. Watch your shared bubble mascot grow and look back on memories in your calendar.`
+`Track your time together`
 
-### Keywords (<= 100 chars)
+### Promotional Text (170 characters max)
+
+`Watch your bubbles grow while you’re together. Open the calendar to see how long you met, adjust a session to the minute, or share a note about your day.`
+
+### Keywords (100 bytes max)
+
 `couple,partner,anniversary,timer,time tracker,calendar,memories,diary,privacy,relationship,date`
 
 ### Description
-```text
-Quietly capture the hours you spend together.
-OurHours is a private time-tracking companion for couples that turns the moments you are together into gentle soap-bubble memories.
 
-- Automatic Together Timer: Uses Bluetooth proximity (with encrypted background location backup—never shown as a map or coordinates) to count time spent nearby. As your session grows, your bubble mascot swells continuously.
-- Shared Calendar & 24h Timeline: Browse daily totals, monthly hours, anniversary/birthday marks, and daily memos. Edit, merge, or add sessions down to the minute.
-- End-to-End Encrypted iCloud Private Sync: Exchange a 256-bit key with a 1-step QR scan. Your records, memos, and anniversaries are encrypted on-device with Apple CryptoKit and synced only through your personal iCloud Private Database share. Zero ads, zero tracking, zero developer servers.
+```text
+OurHours uses Bluetooth to record how long you spend together when your paired iPhones are nearby. While you’re together, your bubbles grow alongside a live timer. Add your anniversary to see how many days you’ve been together.
+
+Open the calendar for daily totals, birthdays, and anniversaries. Tap a date to see your sessions on a 24-hour timeline. Adjust start and end times to the minute, add a missed session, merge records, or share a daily note with your partner.
+
+Pair by QR code to sync your records and notes with end-to-end encryption through iCloud. Optional location assistance helps fill gaps in Bluetooth recording. The app has no maps, coordinate display, live location sharing, ads, or third-party tracking.
 ```
 
 ---
 
 ## 4. App Store Privacy（App プライバシーアンケート回答ガイド）
 
-App Store Connect の **App のプライバシー** で「データを収集していますか？」に回答する際の指針です：
+現行版のプライバシーマニフェストでは、収集するデータは「なし」、トラッキングは「なし」です。位置補完を有効にすると、位置の滞在記録も端末で暗号化してペア間で同期します。共有ゾーンを利用できない場合は、暗号化した記録をCloudKitの公開データベース経由で同期します。[PrivacyInfo.xcprivacy](../Apps/OurHoursiOS/Sources/PrivacyInfo.xcprivacy)
 
-- Apple の定義では、**アプリがユーザーの iCloud（Private / Shared CloudKit DB）のみを使用し、開発者のサーバーや第三者 SDK に一切送信しない場合、「はい、このアプリからデータを収集しています」＝「いいえ（このアプリからデータを収集しません / Data Not Collected）」** として扱われます（ただし Review Notes で iCloud Private DB のみを扱うことを明記するとスムーズです）。
-- もし審査担当者との認識齟齬を避けて明示したい場合でも、「Location（位置情報）」のみを選択し、以下のように設定します：
-  - Usage: **App の機能（App Functionality）** のみ
-  - Linked to the user's identity: **いいえ（No）**
-  - Used for tracking: **いいえ（No）**
-- 広告・解析 SDK が無いため、`NSPrivacyTracking` は `false` です（[PrivacyInfo.xcprivacy](file:///Users/inazumimakoto/OurHours/Apps/OurHoursiOS/Sources/PrivacyInfo.xcprivacy) に記載済み）。
+提出時には、開発者や第三者パートナーがサービス提供に必要な時間を超えてアクセスできるデータがあるかを、同期用レコードのメタデータも含めて確認してください。その結果に基づき「データの収集」と「トラッキング」に回答します。[AppleのAppプライバシー回答ガイド](https://developer.apple.com/app-store/app-privacy-details/)
 
 ---
 
@@ -96,11 +90,11 @@ Thank you for reviewing OurHours!
 
 1. Single-Device Review Walkthrough (No Second Phone Required):
 - After launching the app, step through onboarding or tap "スキップ" (Skip), OR on the pairing step tap "今はひとりで始める" (Start alone for now).
-- You can use the Home view, tap the bubble mascot, open Calendar, tap any day, tap "+" to add a manual time record, drag/edit start & end times, write a daily memo, and open Settings to customize your bubble color, birthday, anniversary, and calendar mark styles.
+- You can use the Home view, tap the bubble mascot, open Calendar, tap a past day, tap "+" to add a manual time record, drag/edit start & end times, write a daily memo, and open Settings to customize your bubble color, birthday, anniversary, and calendar mark styles.
 
 2. Two-Device Pairing Walkthrough (Optional):
-- On Device A (Settings -> "ペアを設定する" or Onboarding Pairing), tap "招待QRコードを作成" to generate an invite QR containing the 256-bit E2EE key and iCloud CKShare URL.
-- On Device B, tap "QRコードを読み取る" and scan Device A's QR code. Both devices perform mutual Bluetooth authentication and synchronize E2EE data over iCloud Private DB zone sharing (CKShare).
+- On Device A (Settings -> "ペアを設定する" or Onboarding Pairing), choose the invite QR action to generate an invite QR containing the 256-bit E2EE key and, when available, the iCloud share URL.
+- On Device B, choose the QR scanner and scan Device A's QR code. Both devices perform mutual Bluetooth authentication and sync end-to-end encrypted records through CloudKit. The owner shares a private zone using CKShare. CloudKit’s public database carries encrypted bootstrap data and can also carry encrypted records while the shared zone is unavailable.
 
 3. Background Modes & Permissions Justification:
 - bluetooth-central & bluetooth-peripheral: Required so paired devices can mutually authenticate and automatically record shared encounter duration while in pockets or background.
@@ -111,7 +105,7 @@ Thank you for reviewing OurHours!
 ---
 【日本語補足】
 ・1台のみでもオンボーディング「今はひとりで始める」からホーム・カレンダー・手動記録作成/編集・ひとことメモ・設定変更のすべてのUIを確認できます。
-・Bluetooth / 位置情報（常に許可）/ silent remote-notification は、ペア間での「一緒にいる時間」の自動記録および iCloud Private DB（CKShare）同期のみに使用し、地図表示や第三者送信・トラッキングは一切行いません。
+・Bluetoothで近接時間を自動記録し、任意の位置情報で記録を補完します。サイレント通知でCloudKitの変更を受け取り、暗号化した記録をペア間で同期します。
 ```
 
 ---
