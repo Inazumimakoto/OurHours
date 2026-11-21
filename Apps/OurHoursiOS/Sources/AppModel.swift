@@ -1,3 +1,4 @@
+import CloudKit
 import CoreBluetooth
 import Observation
 import OurHoursCore
@@ -31,8 +32,22 @@ final class AppModel {
     private let engine: OurHoursBLEEngine
     private(set) var snapshot: EngineSnapshot
     @ObservationIgnored private var subscription: Task<Void, Never>?
+    @ObservationIgnored private var accountChangeTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingExternalShareMetadata: CKShare.Metadata?
     @ObservationIgnored private var scheduledSyncTask: Task<Void, Never>?
     @ObservationIgnored private var scheduledHistorySyncTask: Task<Void, Never>?
+    @ObservationIgnored private var pairSpaceSetupTask: Task<PairSpaceContext?, Never>?
+    @ObservationIgnored private var pairSpaceResetTask: Task<Void, Never>?
+    @ObservationIgnored private var historySyncTask: Task<HistorySyncOutcome?, Never>?
+    @ObservationIgnored private var locationSyncTask: Task<LocationSyncOutcome?, Never>?
+    @ObservationIgnored private var pairGeneration = 0
+    @ObservationIgnored private var historyInputRevision = 0
+    @ObservationIgnored private var locationInputRevision = 0
+
+    let pairSpace = CloudKitPairSpace()
+    private(set) var pairSpaceStatus: PairSpaceStatus = .idle
+    private(set) var activePairSpaceContext: PairSpaceContext?
+    private(set) var lastHistorySyncBackend: SyncStorageBackend?
 
     private let journalStore: JournalStore
     private(set) var journal = JournalSnapshot()
@@ -98,9 +113,15 @@ final class AppModel {
         )
 
         do {
-            journal = try journalStore.load()
-            if let role = initialSnapshot.pairConfiguration?.localRole, journal.profile(for: role) == nil {
-                journal = try journalStore.setRoleProfile(role: role, bubbleColor: localBubbleColor, birthday: localBirthday)
+            if let pair = initialSnapshot.pairConfiguration {
+                journal = try journalStore.prepareForPairTransition(from: nil, to: pair.pairID)
+                if journal.profile(for: pair.localRole) == nil {
+                    journal = try journalStore.setRoleProfile(
+                        role: pair.localRole, bubbleColor: localBubbleColor, birthday: localBirthday
+                    )
+                }
+            } else {
+                journal = try journalStore.load()
             }
         } catch { journalError = error.localizedDescription }
 
@@ -123,21 +144,33 @@ final class AppModel {
 
         let snapshots = engine.snapshotStream()
         subscription = Task { [weak self] in
-            for await value in snapshots {
+            for await publishedSnapshot in snapshots {
                 guard let self else { break }
+                let value = publishedSnapshot.pairConfiguration == self.snapshot.pairConfiguration
+                    ? publishedSnapshot : engine.currentSnapshot()
                 let previousNonActive = self.snapshot.sessions.filter { $0.status != .active }
                 let nextNonActive = value.sessions.filter { $0.status != .active }
                 self.snapshot = value
                 self.refreshPermissionStates()
-                if value.isPaired && nextNonActive != previousNonActive {
-                    self.scheduleHistorySync(delay: .seconds(1.5))
+                if nextNonActive != previousNonActive {
+                    self.historyInputRevision += 1
+                    if value.isPaired {
+                        self.scheduleHistorySync(delay: .seconds(1.5))
+                    }
                 }
+            }
+        }
+        accountChangeTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: .CKAccountChanged) {
+                guard let self else { break }
+                self.invalidatePairSpaceForAccountOrZoneChange()
             }
         }
     }
 
     deinit {
         subscription?.cancel()
+        accountChangeTask?.cancel()
         scheduledSyncTask?.cancel()
         scheduledHistorySyncTask?.cancel()
     }
@@ -292,6 +325,24 @@ final class AppModel {
         return false
     }
 
+    var pairSpaceStatusText: String {
+        switch pairSpaceStatus {
+        case .idle:
+            return "未設定"
+        case .settingUp:
+            return lastHistorySyncBackend == .publicFallback
+                ? "Public DB（共有スペースを準備中）" : "共有スペースを準備中…"
+        case .connected(.privateDB, _, true):
+            return "Private DB（同一Apple ID）"
+        case .connected(.privateDB, _, false):
+            return "Private DB 共有"
+        case .connected(.sharedDB, _, _):
+            return "Shared DB 接続中"
+        case let .unavailable(reason), let .failed(reason):
+            return lastHistorySyncBackend == .publicFallback ? "Public DB（移行待機中）\n\(reason)" : reason
+        }
+    }
+
     var locationSyncStatusText: String {
         switch locationSyncState {
         case .idle:
@@ -314,6 +365,7 @@ final class AppModel {
         do {
             journal = try operation(journalStore)
             journalError = nil
+            historyInputRevision += 1
         } catch { journalError = error.localizedDescription }
     }
 
@@ -362,7 +414,7 @@ final class AppModel {
         case .auto, .peerAuto, .peerCompleted, .autoEdited, .locationMatched:
             let ids = current.linkedSessionIDs.isEmpty ? [current.id] : current.linkedSessionIDs
             let updates = Dictionary(uniqueKeysWithValues: ids.map { ($0, SessionOverrideAction.deleted) })
-            write { try $0.setSessionOverrides(updates) }
+            write { try $0.setSessionOverrides(updates, pairID: snapshot.pairConfiguration?.pairID) }
         }
         scheduleHistorySyncIfPaired()
     }
@@ -392,14 +444,14 @@ final class AppModel {
             } else {
                 var updates: [UUID: SessionOverrideAction] = [current.id: .adjustedStart(startedAt: startedAt)]
                 for id in current.linkedSessionIDs where id != current.id { updates[id] = .deleted }
-                write { try $0.setSessionOverrides(updates) }
+                write { try $0.setSessionOverrides(updates, pairID: snapshot.pairConfiguration?.pairID) }
                 scheduleHistorySyncIfPaired()
             }
         }
     }
 
     func saveMemo(dayKey: String, text: String) {
-        write { try $0.setMemo(dayKey: dayKey, text: text) }
+        write { try $0.setMemo(dayKey: dayKey, text: text, pairID: snapshot.pairConfiguration?.pairID) }
         scheduleHistorySyncIfPaired()
     }
 
@@ -513,6 +565,91 @@ final class AppModel {
         return bundle.peerQRPayload
     }
 
+    func prepareInvitePairing(cloudSetupTimeout: Duration = .seconds(2.5)) async throws -> String {
+        try Task.checkCancellation()
+        let bundle = PairingPayloadCodec.makePairingBundle()
+        try configure(bundle.localConfiguration)
+        let generation = pairGeneration
+        let setupTask = Task { await ensurePairSpaceReady() }
+        let (completion, continuation) = AsyncStream<Void>.makeStream()
+        Task {
+            _ = await setupTask.value
+            continuation.finish()
+        }
+        let timer = Task {
+            do {
+                try await Task.sleep(for: cloudSetupTimeout)
+                continuation.finish()
+            } catch is CancellationError {
+                return
+            } catch {
+                continuation.finish()
+            }
+        }
+        defer { timer.cancel() }
+        var iterator = completion.makeAsyncIterator()
+        _ = await iterator.next()
+        try Task.checkCancellation()
+        guard isPairActive(bundle.localConfiguration, generation: generation),
+              let updated = snapshot.pairConfiguration else { throw CancellationError() }
+        return updated.cloudShareURL == nil ? bundle.peerQRPayload : PairingPayloadCodec.encode(updated, for: .partnerB)
+    }
+
+    func ensureInviteShareURLForExistingPair() async -> String? {
+        guard let pair = snapshot.pairConfiguration, pair.localRole == .partnerA else { return nil }
+        let generation = pairGeneration
+        if pair.cloudShareURL == nil {
+            await ensurePairSpaceReady()
+        }
+        guard isPairActive(pair, generation: generation), let current = snapshot.pairConfiguration else { return nil }
+        return PairingPayloadCodec.encode(current, for: .partnerB)
+    }
+
+    @discardableResult
+    func ensurePairSpaceReady() async -> PairSpaceContext? {
+        guard let config = snapshot.pairConfiguration else { return nil }
+        if let activePairSpaceContext, !activePairSpaceContext.needsMaintenance { return activePairSpaceContext }
+        if let pairSpaceSetupTask { return await pairSpaceSetupTask.value }
+        return await resolvePairSpace(config: config)
+    }
+
+    private func resolvePairSpace(config: PairConfiguration, metadata: CKShare.Metadata? = nil) async -> PairSpaceContext? {
+        let generation = pairGeneration
+        let reset = pairSpaceResetTask
+        if activePairSpaceContext == nil {
+            pairSpaceStatus = .settingUp
+        }
+        let setup = Task { [weak self, pairSpace] () -> PairSpaceContext? in
+            await reset?.value
+            guard let self, generation == pairGeneration else { return nil }
+            let result: PairSpaceResolutionResult
+            if let metadata {
+                result = await pairSpace.acceptExternalShareMetadata(metadata, expectedConfig: config)
+            } else {
+                result = await pairSpace.resolveContext(for: config)
+            }
+            guard generation == pairGeneration else { return nil }
+            pairSpaceSetupTask = nil
+            guard isPairActive(config, generation: generation) else { return nil }
+            if result.context != nil || activePairSpaceContext == nil {
+                pairSpaceStatus = result.status
+                activePairSpaceContext = result.context
+            }
+            if let current = snapshot.pairConfiguration, let shareURL = result.discoveredShareURL,
+               shareURL != current.cloudShareURL {
+                engine.configurePair(current.withCloudShareURL(shareURL))
+                snapshot = engine.currentSnapshot()
+            }
+            return activePairSpaceContext
+        }
+        pairSpaceSetupTask = setup
+        return await setup.value
+    }
+
+    private func isPairActive(_ config: PairConfiguration, generation: Int) -> Bool {
+        pairGeneration == generation && snapshot.pairConfiguration?.matchesCredentials(of: config) == true
+    }
+
     func completePairing(fromURLString value: String) throws {
         let configuration = try PairingPayloadCodec.decode(value)
         guard configuration.localRole == .partnerB else { throw PairingPayloadError.invalidRole }
@@ -520,22 +657,40 @@ final class AppModel {
     }
 
     private func configure(_ configuration: PairConfiguration) throws {
-        let previousPairID = snapshot.pairConfiguration?.pairID
+        let previous = snapshot.pairConfiguration
         engine.configurePair(configuration)
         snapshot = engine.currentSnapshot()
         guard snapshot.pairConfiguration == configuration else {
             throw PairSetupError.saveFailed
         }
+        if previous?.matchesCredentials(of: configuration) != true {
+            resetPairSpace()
+            historySyncState = .idle
+            locationSyncState = .idle
+        }
+        write { try $0.prepareForPairTransition(from: previous?.pairID, to: configuration.pairID) }
+        let transitionError = journalError
         confirmedPeerPairID = nil
         if let cachedPeer = try? peerSyncStore.load(), cachedPeer.pairID == configuration.pairID {
             peerSessions = cachedPeer.sessions
         } else {
             peerSessions = []
         }
-        if previousPairID != configuration.pairID {
+        if previous?.pairID != configuration.pairID {
+            if previous != nil {
+                _ = try? locationStore.clearAll()
+                locationMatchedSessions = []
+            }
             write { try $0.clearRoleProfiles() }
         }
         write { try $0.setRoleProfile(role: configuration.localRole, bubbleColor: localBubbleColor, birthday: localBirthday) }
+        if let transitionError { journalError = transitionError }
+        if let metadata = pendingExternalShareMetadata {
+            pendingExternalShareMetadata = nil
+            if metadata.share.recordID.zoneID.zoneName == PairSpaceCrypto.zoneName(for: configuration) {
+                handleAcceptedExternalShare(metadata)
+            }
+        }
         engine.start()
         scheduleHistorySync(delay: .seconds(1))
         if locationMonitor.isEnabled {
@@ -554,12 +709,17 @@ final class AppModel {
     }
 
     func unpair() {
+        pendingExternalShareMetadata = nil
         let previousConfig = snapshot.pairConfiguration
+        let previousContext = activePairSpaceContext
         engine.unpair()
         snapshot = engine.currentSnapshot()
         guard !snapshot.isPaired else { return }
         confirmedPeerPairID = nil
+        write { try $0.prepareForPairTransition(from: previousConfig?.pairID, to: nil) }
+        let transitionError = journalError
         write { try $0.clearRoleProfiles() }
+        if let transitionError { journalError = transitionError }
         setPartnerNickname("")
         scheduledSyncTask?.cancel()
         scheduledHistorySyncTask?.cancel()
@@ -569,11 +729,63 @@ final class AppModel {
         historySyncState = .idle
         locationMatchedSessions = []
         locationSyncState = .idle
-        if let previousConfig {
-            Task {
-                await historySync.purgeOwnRecord(config: previousConfig)
-                await locationSync.purgeOwnRecords(config: previousConfig)
+        resetPairSpace(purging: previousConfig, context: previousContext)
+    }
+
+    private func resetPairSpace(purging config: PairConfiguration? = nil, context: PairSpaceContext? = nil) {
+        pairGeneration += 1
+        activePairSpaceContext = nil
+        pairSpaceStatus = .idle
+        lastHistorySyncBackend = nil
+
+        if let config { engine.enqueuePendingPurge(config) }
+
+        let previousReset = pairSpaceResetTask
+        let setup = pairSpaceSetupTask
+        let history = historySyncTask
+        let location = locationSyncTask
+        pairSpaceSetupTask = nil
+        historySyncTask = nil
+        locationSyncTask = nil
+        pairSpaceResetTask = Task { [weak self, pairSpace] in
+            await previousReset?.value
+            _ = await setup?.value
+            _ = await history?.value
+            _ = await location?.value
+            await pairSpace.invalidate()
+            await self?.drainPendingPurges(priorityConfig: config, context: context)
+        }
+    }
+
+    private func drainPendingPurges(
+        priorityConfig: PairConfiguration? = nil, context: PairSpaceContext? = nil
+    ) async {
+        var pending = engine.loadPendingPurges()
+        if let priorityConfig {
+            pending.removeAll { $0.matchesCredentials(of: priorityConfig) }
+            pending.insert(priorityConfig, at: 0)
+        }
+        for config in pending {
+            guard snapshot.pairConfiguration?.matchesCredentials(of: config) != true else { continue }
+            let cachedContext = priorityConfig?.matchesCredentials(of: config) == true ? context : nil
+            let historyPurged = await historySync.purgeOwnRecord(config: config, context: cachedContext, pairSpace: pairSpace)
+            let locationPurged = await locationSync.purgeOwnRecords(config: config, context: cachedContext, pairSpace: pairSpace)
+            // Keep the zone accessible until both record purges have succeeded.
+            if historyPurged, locationPurged,
+               snapshot.pairConfiguration?.matchesCredentials(of: config) != true,
+               await pairSpace.purgePairSpace(config: config) {
+                engine.removePendingPurge(config)
             }
+        }
+    }
+
+    private func invalidatePairSpaceForAccountOrZoneChange() {
+        resetPairSpace()
+        pairSpaceStatus = snapshot.isPaired ? .settingUp : .idle
+        guard snapshot.isPaired else { return }
+        Task { await syncSharedHistoryNow() }
+        if locationMonitor.isEnabled && isAutoRecordingEnabled {
+            Task { await syncLocationNow(requestFreshFix: false) }
         }
     }
 
@@ -598,6 +810,13 @@ final class AppModel {
         refreshPermissionStates()
         engine.handleForegroundActivation()
         locationMonitor.startIfAuthorized()
+        if !engine.loadPendingPurges().isEmpty {
+            let priorReset = pairSpaceResetTask
+            pairSpaceResetTask = Task { [weak self] in
+                await priorReset?.value
+                await self?.drainPendingPurges()
+            }
+        }
         if snapshot.isPaired {
             Task { await syncSharedHistoryNow() }
         }
@@ -617,11 +836,25 @@ final class AppModel {
         }
     }
 
-    func syncSharedHistoryNow() async {
-        guard let config = snapshot.pairConfiguration else { return }
-        guard !isHistorySyncing else { return }
-
+    @discardableResult
+    func syncSharedHistoryNow() async -> HistorySyncOutcome? {
+        guard let config = snapshot.pairConfiguration else { return nil }
+        if let historySyncTask { return await historySyncTask.value }
+        let generation = pairGeneration
         historySyncState = .syncing
+        let task = Task { [weak self] () -> HistorySyncOutcome? in
+            guard let self else { return nil }
+            let outcome = await performHistorySync(config: config, generation: generation)
+            if generation == pairGeneration { historySyncTask = nil }
+            return outcome
+        }
+        historySyncTask = task
+        return await task.value
+    }
+
+    private func performHistorySync(config: PairConfiguration, generation: Int) async -> HistorySyncOutcome? {
+        guard isPairActive(config, generation: generation) else { return nil }
+        let startedRevision = historyInputRevision
         var bgTaskID = UIBackgroundTaskIdentifier.invalid
         bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "OurHoursHistorySync") {
             if bgTaskID != .invalid {
@@ -635,45 +868,78 @@ final class AppModel {
             }
         }
 
+        let context = await ensurePairSpaceReady()
+        guard isPairActive(config, generation: generation) else { return nil }
         let outcome = await historySync.sync(
             config: config,
             localSessions: snapshot.sessions,
             journalStore: journalStore,
             peerSyncStore: peerSyncStore,
+            context: context,
+            pairSpace: pairSpace,
             isPairActive: { [weak self] in
-                self?.snapshot.pairConfiguration == config
+                self?.isPairActive(config, generation: generation) == true
             }
         )
-        guard snapshot.pairConfiguration == config else { return }
+        guard isPairActive(config, generation: generation) else { return nil }
         historySyncState = outcome.state
+        lastHistorySyncBackend = outcome.backend
         if outcome.peerRecordDetected {
             confirmedPeerPairID = config.pairID
         }
+        if !outcome.recoveredOwnSessions.isEmpty {
+            engine.importRecoveredSessions(outcome.recoveredOwnSessions)
+            snapshot = engine.currentSnapshot()
+        }
+        var journalChangedDuringSync = false
         if let updatedJournal = outcome.journal {
             // Local edits can reach disk while CloudKit is uploading its earlier snapshot.
             journal = (try? journalStore.load()) ?? updatedJournal
+            journalChangedDuringSync = journal != updatedJournal
             let profile = journal.profile(for: config.localRole)
             if profile?.bubbleColor != localBubbleColor || profile?.birthday != localBirthday {
                 publishLocalProfile()
-            } else if journal != updatedJournal {
-                scheduleHistorySyncIfPaired()
             }
         }
         if let updatedPeer = outcome.peerSessions {
             peerSessions = updatedPeer
         }
+        if outcome.invalidateContext {
+            activePairSpaceContext = nil
+            pairSpaceStatus = .settingUp
+            await pairSpace.invalidate()
+        }
+        if isPairActive(config, generation: generation),
+           historyInputRevision != startedRevision || journalChangedDuringSync {
+            scheduleHistorySyncIfPaired()
+        }
+        return outcome
     }
 
-    func syncLocationNow(requestFreshFix: Bool) async {
+    @discardableResult
+    func syncLocationNow(requestFreshFix: Bool) async -> LocationSyncOutcome? {
         guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled, locationMonitor.isEnabled else {
-            return
+            return nil
         }
         if requestFreshFix {
             locationMonitor.requestFreshFix(source: .manualSyncFix)
         }
-        guard !isLocationSyncing else { return }
-
+        if let locationSyncTask { return await locationSyncTask.value }
+        let generation = pairGeneration
         locationSyncState = .syncing
+        let task = Task { [weak self] () -> LocationSyncOutcome? in
+            guard let self else { return nil }
+            let outcome = await performLocationSync(config: config, generation: generation)
+            if generation == pairGeneration { locationSyncTask = nil }
+            return outcome
+        }
+        locationSyncTask = task
+        return await task.value
+    }
+
+    private func performLocationSync(config: PairConfiguration, generation: Int) async -> LocationSyncOutcome? {
+        guard isPairActive(config, generation: generation) else { return nil }
+        let startedRevision = locationInputRevision
         var bgTaskID = UIBackgroundTaskIdentifier.invalid
         bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "OurHoursLocationSync") {
             if bgTaskID != .invalid {
@@ -687,15 +953,78 @@ final class AppModel {
             }
         }
 
-        let state = await locationSync.sync(config: config, store: locationStore)
-        locationSyncState = state
+        let context = await ensurePairSpaceReady()
+        guard isPairActive(config, generation: generation) else { return nil }
+        let outcome = await locationSync.sync(
+            config: config,
+            store: locationStore,
+            context: context,
+            pairSpace: pairSpace,
+            isPairActive: { [weak self] in
+                self?.isPairActive(config, generation: generation) == true
+            }
+        )
+        guard isPairActive(config, generation: generation) else { return nil }
+        locationSyncState = outcome.state
         if let updated = try? locationStore.load() {
             locationMatchedSessions = updated.matchedSessions
+        }
+        if outcome.invalidateContext {
+            activePairSpaceContext = nil
+            pairSpaceStatus = .settingUp
+            await pairSpace.invalidate()
+        }
+        if isPairActive(config, generation: generation), locationInputRevision != startedRevision {
+            scheduleLocationSync(delay: .seconds(1))
+        }
+        return outcome
+    }
+
+    func handleRemoteCloudKitPush() async -> UIBackgroundFetchResult {
+        guard let config = snapshot.pairConfiguration else { return .noData }
+        let generation = pairGeneration
+        // A sync that was already running may have fetched before the pushed change.
+        _ = await historySyncTask?.value
+        guard isPairActive(config, generation: generation) else { return .noData }
+        let history = await syncSharedHistoryNow()
+        var location: LocationSyncOutcome?
+        if isPairActive(config, generation: generation), locationMonitor.isEnabled, isAutoRecordingEnabled {
+            _ = await locationSyncTask?.value
+            if isPairActive(config, generation: generation) {
+                location = await syncLocationNow(requestFreshFix: false)
+            }
+        }
+        if history?.didApplyRemoteChanges == true || location?.didApplyRemoteChanges == true { return .newData }
+        switch (history?.state, location?.state) {
+        case (.failed?, _), (_, .failed?):
+            return .failed
+        default:
+            return .noData
+        }
+    }
+
+    func handleAcceptedExternalShare(_ metadata: CKShare.Metadata) {
+        guard let config = snapshot.pairConfiguration else {
+            pendingExternalShareMetadata = metadata
+            return
+        }
+        guard metadata.share.recordID.zoneID.zoneName == PairSpaceCrypto.zoneName(for: config) else { return }
+        let generation = pairGeneration
+        Task { [weak self] in
+            guard let self else { return }
+            while let setup = pairSpaceSetupTask, generation == pairGeneration {
+                _ = await setup.value
+            }
+            guard generation == pairGeneration else { return }
+            guard await resolvePairSpace(config: config, metadata: metadata) != nil,
+                  isPairActive(config, generation: generation) else { return }
+            _ = await handleRemoteCloudKitPush()
         }
     }
 
     private func handleCapturedVisit(_ visit: LocationVisitRecord, arrivalUnknown: Bool) {
         guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled else { return }
+        locationInputRevision += 1
         _ = try? locationStore.recordVisit(visit, role: config.localRole, arrivalUnknown: arrivalUnknown, now: .now)
         if let matched = try? locationStore.recomputeMatches(pairID: config.pairID, now: .now) {
             locationMatchedSessions = matched.matchedSessions
@@ -705,6 +1034,7 @@ final class AppModel {
 
     private func handleCapturedPoint(_ point: LocationPointSample) {
         guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled else { return }
+        locationInputRevision += 1
         _ = try? locationStore.recordPoint(point, role: config.localRole, now: .now)
         if let matched = try? locationStore.recomputeMatches(pairID: config.pairID, now: .now) {
             locationMatchedSessions = matched.matchedSessions

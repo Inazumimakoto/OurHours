@@ -178,4 +178,67 @@ struct JournalStoreTests {
         let roundTrip = CalendarDateValue(date: leapDay.toDate())
         #expect(roundTrip == leapDay)
     }
+
+    @Test func clearedSessionOverrideProducesTombstoneAndBlocksStaleResurrection() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let id = UUID()
+        let stale = try store.setSessionOverride(sessionID: id, action: .deleted)
+        let cleared = try store.clearSessionOverride(sessionID: id)
+        let deletion = try #require(cleared.deletedSessionOverrides[id])
+        let original = try #require(stale.sessionOverrides[id])
+        #expect(deletion > original.updatedAt)
+        #expect(try !store.mergeRemote(stale).didChange)
+        #expect(JournalMerger.merge(local: stale, remote: cleared) == cleared)
+        let future = deletion.addingTimeInterval(3600)
+        try store.mergeRemote(JournalSnapshot(deletedSessionOverrides: [id: future]))
+        let new = try store.setSessionOverride(sessionID: id, action: .adjustedStart(startedAt: start))
+        #expect(try #require(new.sessionOverrides[id]).updatedAt > future)
+        #expect(new.deletedSessionOverrides.isEmpty)
+        #expect(JournalMerger.merge(local: cleared, remote: new) == new)
+    }
+
+    @Test func journalScopingIsolatesMemosOverridesAndManualRecordsAcrossRePairing() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let oldPair = UUID(), newPair = UUID(), session = UUID(), cleared = UUID()
+        try store.addManualRecord(pairID: nil, startedAt: start, endedAt: end)
+        try store.setMemo(dayKey: "day1", text: "old")
+        let solo = try store.setSessionOverride(sessionID: session, action: .deleted)
+        #expect(solo.scoped(to: oldPair, allowedSessionIDs: []).sessionOverrides.isEmpty)
+        try store.clearSessionOverride(sessionID: cleared)
+        try store.setRoleProfile(role: .partnerA, bubbleColor: .mint, birthday: nil)
+        try store.setAnniversary(CalendarDateValue(year: 2020, month: 1, day: 1))
+        try store.setMemo(dayKey: "deleted", text: "")
+        let retained = try store.prepareForPairTransition(from: oldPair, to: nil)
+        #expect(retained.manualRecords.first?.pairID == oldPair)
+        #expect(retained.dailyMemos["day1"]?.pairID == oldPair)
+        #expect(retained.sessionOverrides[session]?.pairID == oldPair)
+        #expect(retained.deletedSessionOverrides[cleared] != nil)
+        #expect(retained.roleProfiles.isEmpty && retained.anniversary == nil && retained.deletedMemoDays.isEmpty)
+        try store.setMemo(dayKey: "day2", text: "solo")
+        let paired = try store.prepareForPairTransition(from: nil, to: newPair)
+        #expect(try store.load() == paired)
+        let scoped = paired.scoped(to: newPair, allowedSessionIDs: [])
+        #expect(scoped.manualRecords.isEmpty && scoped.sessionOverrides.isEmpty && scoped.deletedSessionOverrides.isEmpty)
+        #expect(scoped.dailyMemos.count == 1 && scoped.dailyMemos["day2"]?.pairID == newPair)
+        #expect(try store.claimUnscopedEntries(for: newPair) == paired)
+    }
+
+    @Test func newerUnscopedMemoAndOverrideRetainPairOwnership() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let pair = UUID(), session = UUID()
+        try store.setSessionOverride(sessionID: session, action: .deleted, pairID: pair)
+        try store.setMemo(dayKey: "day", text: "before", pairID: pair)
+        try store.setSessionOverrides([session: .adjustedStart(startedAt: start)])
+        let local = try store.setMemo(dayKey: "day", text: "after")
+        #expect(local.sessionOverrides[session]?.pairID == pair && local.dailyMemos["day"]?.pairID == pair)
+        let future = Date().addingTimeInterval(3600)
+        let remote = JournalSnapshot(
+            sessionOverrides: [session: SessionOverride(sessionID: session, action: .deleted, updatedAt: future)],
+            dailyMemos: ["day": DailyMemo(dayKey: "day", text: "remote", updatedAt: future)]
+        )
+        let merged = JournalMerger.merge(local: local, remote: remote)
+        #expect(merged.dailyMemos["day"]?.text == "remote" && merged.dailyMemos["day"]?.pairID == pair)
+        #expect(merged.sessionOverrides[session]?.action == .deleted && merged.sessionOverrides[session]?.pairID == pair)
+        #expect(JournalMerger.merge(local: remote, remote: local) == merged)
+    }
 }

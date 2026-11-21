@@ -101,6 +101,7 @@ struct PartnerSyncTests {
         let encoded = try JSONEncoder().encode(full)
         var jsonObj = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         jsonObj.removeValue(forKey: "deletedManualRecords")
+        jsonObj.removeValue(forKey: "deletedSessionOverrides")
         jsonObj.removeValue(forKey: "deletedMemoDays")
         jsonObj.removeValue(forKey: "roleProfiles")
         jsonObj.removeValue(forKey: "anniversary")
@@ -110,6 +111,9 @@ struct PartnerSyncTests {
         #expect(decoded.roleProfiles.isEmpty)
         #expect(decoded.anniversary == nil)
         #expect(decoded.manualRecords.isEmpty)
+        #expect(decoded.deletedSessionOverrides.isEmpty)
+        #expect(decoded.sessionOverrides[sessionID]?.pairID == nil)
+        #expect(decoded.dailyMemos["2026-11-21"]?.pairID == nil)
         #expect(decoded.sessionOverrides.count == 1)
         #expect(decoded.dailyMemos["2026-11-21"]?.text == "Legacy")
         #expect(decoded.deletedManualRecords.isEmpty)
@@ -464,5 +468,30 @@ struct PartnerSyncTests {
 
         try syncStore.clearAll()
         #expect(try syncStore.load() == nil)
+    }
+
+    @Test func ownBLESessionMergerRecoversRemoteCompletedSessionsAndUpgradesUnknownEnd() {
+        let pair = UUID(), time = Date(timeIntervalSince1970: 100)
+        let unknown = EncounterSession(pairID: pair, startedAt: time, status: .unknownEnd,
+                                       connectionPath: .scanDiscovery, startRole: .peripheral)
+        var complete = unknown
+        complete.status = .completed
+        complete.endedAt = time.addingTimeInterval(300)
+        var shorter = complete
+        shorter.endedAt = time.addingTimeInterval(200)
+        let missing = SyncedPeerSession(id: UUID(), pairID: pair, startedAt: time.addingTimeInterval(-500),
+                                        endedAt: time, status: .completed, connectionPath: .restoredConnection)
+        let foreign = SyncedPeerSession(id: UUID(), pairID: UUID(), startedAt: time, endedAt: time,
+                                        status: .completed, connectionPath: .autoReconnect)
+        var active = complete
+        active.status = .active
+        let remote = [missing, foreign, SyncedPeerSession(from: complete), SyncedPeerSession(from: shorter)]
+        let result = PartnerSyncMerger.mergeOwnBLESessions(local: [unknown], remote: remote, pairID: pair)
+        #expect(result.outbound == [missing, SyncedPeerSession(from: complete)])
+        #expect(result.missingLocal.map(SyncedPeerSession.init(from:)) == result.outbound)
+        #expect(result.missingLocal.allSatisfy { $0.startRole == .central && $0.endReason == .disconnected })
+        let protected = PartnerSyncMerger.mergeOwnBLESessions(local: [active], remote: remote, pairID: pair)
+        #expect(protected.missingLocal.map(\.id) == [missing.id])
+        #expect(PartnerSyncMerger.mergeOwnBLESessions(local: result.missingLocal, remote: remote, pairID: pair).missingLocal.isEmpty)
     }
 }

@@ -390,6 +390,8 @@ struct SettingsView: View {
                 debugBlock(title: "記録・メモを同期（CloudKit）") {
                     debugRow("同期状態", value: model.historySyncStatusText)
                     Divider()
+                    debugRow("保存先", value: model.pairSpaceStatusText)
+                    Divider()
                     debugRow("相手のBLE記録", value: "\(model.syncedPeerSessionCount)件")
                     Divider()
                     Button("今すぐ記録・メモを同期") {

@@ -1,3 +1,4 @@
+import CloudKit
 import CoreBluetooth
 import OurHoursCore
 import SwiftUI
@@ -47,7 +48,57 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             model.handleBackgroundLocationLaunch()
         }
         appModel = model
+        ShareSceneDelegate.appModel = model
+        application.registerForRemoteNotifications()
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard let notification = CKNotification(fromRemoteNotificationDictionary: userInfo),
+              notification.subscriptionID == nil
+                || notification.subscriptionID?.hasPrefix("ourhours.pairspace.") == true else {
+            completionHandler(.noData)
+            return
+        }
+        var finished = false
+        let finish: @MainActor (UIBackgroundFetchResult) -> Void = { result in
+            guard !finished else { return }
+            finished = true
+            completionHandler(result)
+        }
+        let timeout = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(25))
+            } catch {
+                return
+            }
+            finish(.failed)
+        }
+        Task { @MainActor in
+            let result = await appModel?.handleRemoteCloudKitPush() ?? .noData
+            timeout.cancel()
+            finish(result)
+        }
+    }
+
+    func application(_ application: UIApplication, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
+        appModel?.handleAcceptedExternalShare(metadata)
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting session: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: session.role)
+        if session.role == .windowApplication {
+            configuration.delegateClass = ShareSceneDelegate.self
+        }
+        return configuration
     }
 
     private func configureAppearance() {
@@ -70,5 +121,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         ]
         UIBarButtonItem.appearance().setTitleTextAttributes(barAttributes, for: .normal)
         UIBarButtonItem.appearance().setTitleTextAttributes(barAttributes, for: .highlighted)
+    }
+}
+
+@MainActor
+private final class ShareSceneDelegate: NSObject, UIWindowSceneDelegate {
+    static weak var appModel: AppModel?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        if let metadata = options.cloudKitShareMetadata {
+            Self.appModel?.handleAcceptedExternalShare(metadata)
+        }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
+        Self.appModel?.handleAcceptedExternalShare(metadata)
     }
 }

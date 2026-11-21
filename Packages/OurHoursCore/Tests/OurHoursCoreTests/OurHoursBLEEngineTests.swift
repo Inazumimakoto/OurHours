@@ -179,4 +179,55 @@ struct OurHoursBLEEngineTests {
             $0.kind == "backgroundWake" && $0.metadata["source"] == "locationVisit"
         })
     }
+
+    @Test func pendingPurgeQueuePersistsUntilExplicitRemoval() throws {
+        let pending = InMemorySecretStorage(), credentials = InMemorySecretStorage()
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = PairingPayloadCodec.makePairingBundle().localConfiguration
+        let updated = config.withCloudShareURL("https://icloud.com/share/test")
+        let second = try PairingPayloadCodec.decode(PairingPayloadCodec.encode(config, for: config.localRole.opposite))
+        func engine() -> OurHoursBLEEngine {
+            OurHoursBLEEngine(configStore: PairConfigStore(secretStorage: credentials, pendingPurgeStorage: pending),
+                              logStore: EncounterLogStore(directory: directory), enableStateRestoration: false)
+        }
+        let original = engine()
+        original.enqueuePendingPurge(config)
+        original.enqueuePendingPurge(second)
+        original.enqueuePendingPurge(updated)
+        let restarted = engine()
+        #expect(restarted.loadPendingPurges() == [updated, second])
+        restarted.removePendingPurge(config)
+        #expect(original.loadPendingPurges() == [second])
+        restarted.removePendingPurge(second)
+        #expect(original.loadPendingPurges().isEmpty && pending.load() == nil)
+    }
+
+    @Test func engineImportsRecoveredOwnSessionsWithoutDisturbingActiveSession() throws {
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = EncounterLogStore(directory: directory)
+        let time = Date(timeIntervalSince1970: 1_700_000_000)
+        let active = EncounterSession(pairID: UUID(), startedAt: time, connectionPath: .scanDiscovery, startRole: .central)
+        var collision = active
+        collision.status = .completed
+        collision.endedAt = time.addingTimeInterval(60)
+        let historical = EncounterSession(pairID: active.pairID, startedAt: time.addingTimeInterval(-3600),
+                                          endedAt: time, status: .completed, connectionPath: .incomingPeripheral,
+                                          startRole: .central, endReason: .disconnected)
+        var unknown = historical
+        unknown.endedAt = nil
+        unknown.status = .unknownEnd
+        unknown.endReason = .terminatedWhileActive
+        let other = EncounterSession(pairID: active.pairID, startedAt: time.addingTimeInterval(-7200),
+                                     status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central)
+        try log.saveSessions([unknown, active])
+        let engine = OurHoursBLEEngine(configStore: PairConfigStore(secretStorage: InMemorySecretStorage()),
+                                       logStore: log, enableStateRestoration: false)
+        engine.importRecoveredSessions([collision, historical, other])
+        engine.importRecoveredSessions([historical])
+        #expect(engine.currentSnapshot().activeSession == active)
+        #expect(engine.currentSnapshot().sessions == [other, historical, active])
+        #expect(try log.loadSessions() == [other, historical, active])
+    }
 }

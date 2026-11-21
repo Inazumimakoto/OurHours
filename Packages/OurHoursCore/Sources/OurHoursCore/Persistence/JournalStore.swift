@@ -92,12 +92,12 @@ public final class JournalStore: Sendable {
     }
 
     @discardableResult
-    public func setSessionOverride(sessionID: UUID, action: SessionOverrideAction) throws -> JournalSnapshot {
-        try setSessionOverrides([sessionID: action])
+    public func setSessionOverride(sessionID: UUID, action: SessionOverrideAction, pairID: UUID? = nil) throws -> JournalSnapshot {
+        try setSessionOverrides([sessionID: action], pairID: pairID)
     }
 
     @discardableResult
-    public func setSessionOverrides(_ updates: [UUID: SessionOverrideAction]) throws -> JournalSnapshot {
+    public func setSessionOverrides(_ updates: [UUID: SessionOverrideAction], pairID: UUID? = nil) throws -> JournalSnapshot {
         for action in updates.values {
             if case let .edited(startedAt, endedAt) = action, !(endedAt > startedAt) {
                 throw JournalStoreError.invalidTimeRange
@@ -105,13 +105,17 @@ public final class JournalStore: Sendable {
         }
         guard !updates.isEmpty else { return try load() }
         return try modify { snapshot in
-            let floor = updates.keys.compactMap { snapshot.sessionOverrides[$0]?.updatedAt }.max() ?? .distantPast
-            let ts = Self.monotonicNow(after: floor)
+            let floors = updates.keys.map { id in
+                max(snapshot.sessionOverrides[id]?.updatedAt ?? .distantPast, snapshot.deletedSessionOverrides[id] ?? .distantPast)
+            }
+            let ts = Self.monotonicNow(after: floors)
             for (sessionID, action) in updates {
+                snapshot.deletedSessionOverrides[sessionID] = nil
                 snapshot.sessionOverrides[sessionID] = SessionOverride(
                     sessionID: sessionID,
                     action: action,
-                    updatedAt: ts
+                    updatedAt: ts,
+                    pairID: pairID ?? snapshot.sessionOverrides[sessionID]?.pairID
                 )
             }
         }
@@ -119,11 +123,17 @@ public final class JournalStore: Sendable {
 
     @discardableResult
     public func clearSessionOverride(sessionID: UUID) throws -> JournalSnapshot {
-        try modify { $0.sessionOverrides[sessionID] = nil }
+        try modify { snapshot in
+            snapshot.deletedSessionOverrides[sessionID] = Self.monotonicNow(
+                after: snapshot.sessionOverrides[sessionID]?.updatedAt ?? .distantPast,
+                snapshot.deletedSessionOverrides[sessionID] ?? .distantPast
+            )
+            snapshot.sessionOverrides[sessionID] = nil
+        }
     }
 
     @discardableResult
-    public func setMemo(dayKey: String, text: String) throws -> JournalSnapshot {
+    public func setMemo(dayKey: String, text: String, pairID: UUID? = nil) throws -> JournalSnapshot {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return try modify { snapshot in
             let existingMemoAt = snapshot.dailyMemos[dayKey]?.updatedAt ?? .distantPast
@@ -133,7 +143,9 @@ public final class JournalStore: Sendable {
                 snapshot.dailyMemos[dayKey] = nil
                 snapshot.deletedMemoDays[dayKey] = ts
             } else {
-                snapshot.dailyMemos[dayKey] = DailyMemo(dayKey: dayKey, text: trimmed, updatedAt: ts)
+                snapshot.dailyMemos[dayKey] = DailyMemo(
+                    dayKey: dayKey, text: trimmed, updatedAt: ts, pairID: pairID ?? snapshot.dailyMemos[dayKey]?.pairID
+                )
                 snapshot.deletedMemoDays[dayKey] = nil
             }
         }
@@ -179,6 +191,7 @@ public final class JournalStore: Sendable {
                 }
             }
             for sid in sessionOverrideUpdates.keys {
+                if let deletedAt = snapshot.deletedSessionOverrides[sid] { floors.append(deletedAt) }
                 if let prevOv = snapshot.sessionOverrides[sid] {
                     floors.append(prevOv.updatedAt)
                 }
@@ -217,11 +230,32 @@ public final class JournalStore: Sendable {
             }
 
             for (sid, action) in sessionOverrideUpdates {
+                snapshot.deletedSessionOverrides[sid] = nil
                 snapshot.sessionOverrides[sid] = SessionOverride(
                     sessionID: sid,
                     action: action,
-                    updatedAt: ts
+                    updatedAt: ts,
+                    pairID: pairID ?? snapshot.sessionOverrides[sid]?.pairID
                 )
+            }
+        }
+    }
+
+    @discardableResult
+    public func claimUnscopedEntries(for pairID: UUID) throws -> JournalSnapshot {
+        try modify { $0 = $0.stampingUnscoped(with: pairID) }
+    }
+
+    @discardableResult
+    public func prepareForPairTransition(from previousPairID: UUID?, to nextPairID: UUID?) throws -> JournalSnapshot {
+        try modify { snapshot in
+            if let owner = previousPairID ?? nextPairID {
+                snapshot = snapshot.stampingUnscoped(with: owner)
+            }
+            if previousPairID != nil && previousPairID != nextPairID {
+                snapshot.roleProfiles = [:]
+                snapshot.anniversary = nil
+                snapshot.deletedMemoDays = [:]
             }
         }
     }

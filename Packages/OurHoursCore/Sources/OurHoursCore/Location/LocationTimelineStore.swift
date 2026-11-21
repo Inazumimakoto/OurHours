@@ -113,6 +113,26 @@ public final class LocationTimelineStore: Sendable {
     }
 
     @discardableResult
+    public func mergeRemoteOwnBuckets(
+        _ buckets: [String: DayLocationBucket], role: PeerRole, now: Date = Date()
+    ) throws -> (snapshot: LocationTimelineSnapshot, didChange: Bool) {
+        try Self.lock.withLock { _ in
+            let current = try read()
+            var snapshot = current
+            let valid = Set(LocationDayKey.recentUTCDayKeys(endingAt: now, days: Self.retentionDays))
+            for (key, bucket) in buckets {
+                guard bucket.role == role, key == bucket.dayKeyUTC, valid.contains(key), !bucket.isEmpty else { continue }
+                let existing = snapshot.localBuckets[key] ?? DayLocationBucket(dayKeyUTC: key, role: role, updatedAt: bucket.updatedAt)
+                snapshot.localBuckets[key] = existing.merged(with: bucket)
+            }
+            Self.pruneOldBuckets(&snapshot, now: now)
+            guard snapshot != current else { return (current, false) }
+            try write(snapshot)
+            return (snapshot, true)
+        }
+    }
+
+    @discardableResult
     public func replacePeerBuckets(
         _ buckets: [String: DayLocationBucket],
         now: Date = Date()
@@ -282,12 +302,16 @@ public final class LocationTimelineStore: Sendable {
         try Self.lock.withLock { _ in
             var snapshot = try read()
             try update(&snapshot)
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .secondsSince1970
-            let data = try encoder.encode(snapshot)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: fileURL, options: .atomic)
+            try write(snapshot)
             return snapshot
         }
+    }
+
+    private func write(_ snapshot: LocationTimelineSnapshot) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let data = try encoder.encode(snapshot)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: fileURL, options: .atomic)
     }
 }

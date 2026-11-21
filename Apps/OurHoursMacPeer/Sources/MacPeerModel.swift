@@ -140,6 +140,8 @@ final class MacPeerModel {
                 pairingError = "The pairing URL must assign role A or B."
             case .invalidEpoch:
                 pairingError = "The pairing URL contains an invalid key epoch."
+            case .invalidShareURL:
+                pairingError = "The pairing URL contains an invalid iCloud share link."
             case .invalidURL, nil:
                 pairingError = "Enter a valid OurHours invite URL beginning with ourhours://pair/v1?."
             }

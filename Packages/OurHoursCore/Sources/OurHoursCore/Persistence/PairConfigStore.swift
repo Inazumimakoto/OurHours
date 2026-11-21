@@ -79,14 +79,61 @@ public final class InMemorySecretStorage: SecretStorage {
 
 // UserDefaults synchronizes its own reads and writes. SecretStorage must be Sendable.
 public final class PairConfigStore: @unchecked Sendable {
+    private static let pendingPurgeLock = Mutex(())
+    private let pendingPurgeStorage: any SecretStorage
     private let secretStorage: any SecretStorage
     private let defaults: UserDefaults
     private let recordingKey = "OurHours.isAutoRecordingEnabled"
     private let peripheralKey = "OurHours.lastAuthenticatedPeripheralID"
 
-    public init(secretStorage: any SecretStorage = KeychainSecretStorage(), userDefaults: UserDefaults = .standard) {
+    public init(
+        secretStorage: any SecretStorage = KeychainSecretStorage(),
+        pendingPurgeStorage: (any SecretStorage)? = nil,
+        userDefaults: UserDefaults = .standard
+    ) {
+        self.pendingPurgeStorage = pendingPurgeStorage ?? (secretStorage is KeychainSecretStorage
+            ? KeychainSecretStorage(account: "pendingPurgeConfigurations") as any SecretStorage : InMemorySecretStorage())
         self.secretStorage = secretStorage
         defaults = userDefaults
+    }
+
+    private func readPendingPurges() throws -> [PairConfiguration] {
+        guard let data = try pendingPurgeStorage.load() else { return [] }
+        return try JSONDecoder().decode([PairConfiguration].self, from: data)
+    }
+
+    public func loadPendingPurges() -> [PairConfiguration] {
+        Self.pendingPurgeLock.withLock { _ in (try? readPendingPurges()) ?? [] }
+    }
+
+    public func enqueuePendingPurge(_ configuration: PairConfiguration) {
+        guard configuration.isValid else { return }
+        Self.pendingPurgeLock.withLock { _ in
+            guard var pending = try? readPendingPurges() else { return }
+            if let index = pending.firstIndex(where: { Self.samePurge($0, configuration) }) {
+                pending[index] = configuration
+            } else {
+                pending.append(configuration)
+            }
+            try? pendingPurgeStorage.save(JSONEncoder().encode(pending))
+        }
+    }
+
+    public func removePendingPurge(_ configuration: PairConfiguration) {
+        Self.pendingPurgeLock.withLock { _ in
+            guard var pending = try? readPendingPurges(),
+                  let index = pending.firstIndex(where: { Self.samePurge($0, configuration) }) else { return }
+            pending.remove(at: index)
+            if pending.isEmpty {
+                try? pendingPurgeStorage.delete()
+            } else {
+                try? pendingPurgeStorage.save(JSONEncoder().encode(pending))
+            }
+        }
+    }
+
+    private static func samePurge(_ lhs: PairConfiguration, _ rhs: PairConfiguration) -> Bool {
+        lhs.pairID == rhs.pairID && lhs.keyEpoch == rhs.keyEpoch && lhs.localRole == rhs.localRole
     }
 
     public func loadPairConfiguration() throws -> PairConfiguration? {

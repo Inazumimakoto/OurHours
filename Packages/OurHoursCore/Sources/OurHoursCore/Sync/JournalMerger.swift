@@ -3,14 +3,15 @@ import Foundation
 public enum JournalMerger {
     public static func merge(local: JournalSnapshot, remote: JournalSnapshot) -> JournalSnapshot {
         let manual = mergeManualRecords(local: local, remote: remote)
-        let overrides = mergeOverrides(local: local.sessionOverrides, remote: remote.sessionOverrides)
+        let overrides = mergeOverrides(local: local, remote: remote)
         let memos = mergeMemos(local: local, remote: remote)
         return JournalSnapshot(
             manualRecords: manual.records,
-            sessionOverrides: overrides,
+            sessionOverrides: overrides.overrides,
             dailyMemos: memos.memos,
             deletedManualRecords: manual.tombstones,
             deletedMemoDays: memos.tombstones,
+            deletedSessionOverrides: overrides.tombstones,
             roleProfiles: local.roleProfiles.merging(remote.roleProfiles, uniquingKeysWith: preferredProfile),
             anniversary: preferredAnniversary(local.anniversary, remote.anniversary)
         )
@@ -110,18 +111,23 @@ public enum JournalMerger {
     }
 
     private static func mergeOverrides(
-        local: [UUID: SessionOverride],
-        remote: [UUID: SessionOverride]
-    ) -> [UUID: SessionOverride] {
-        var result: [UUID: SessionOverride] = local
-        for (id, candidate) in remote {
-            if let existing = result[id] {
-                result[id] = preferredOverride(existing, candidate)
+        local: JournalSnapshot,
+        remote: JournalSnapshot
+    ) -> (overrides: [UUID: SessionOverride], tombstones: [UUID: Date]) {
+        var overrides = local.sessionOverrides.merging(remote.sessionOverrides) { lhs, rhs in
+            let winner = preferredOverride(lhs, rhs)
+            return SessionOverride(sessionID: winner.sessionID, action: winner.action, updatedAt: winner.updatedAt,
+                                   pairID: winner.pairID ?? lhs.pairID ?? rhs.pairID)
+        }
+        var tombstones = local.deletedSessionOverrides.merging(remote.deletedSessionOverrides, uniquingKeysWith: max)
+        for (id, deletedAt) in tombstones {
+            if let entry = overrides[id], entry.updatedAt > deletedAt {
+                tombstones[id] = nil
             } else {
-                result[id] = candidate
+                overrides[id] = nil
             }
         }
-        return result
+        return (overrides, tombstones)
     }
 
     private static func preferredOverride(_ lhs: SessionOverride, _ rhs: SessionOverride) -> SessionOverride {
@@ -152,7 +158,9 @@ public enum JournalMerger {
         var memosByDay = local.dailyMemos
         for (dayKey, candidate) in remote.dailyMemos {
             if let existing = memosByDay[dayKey] {
-                memosByDay[dayKey] = preferredMemo(existing, candidate)
+                let winner = preferredMemo(existing, candidate)
+                memosByDay[dayKey] = DailyMemo(dayKey: winner.dayKey, text: winner.text, updatedAt: winner.updatedAt,
+                                               pairID: winner.pairID ?? existing.pairID ?? candidate.pairID)
             } else {
                 memosByDay[dayKey] = candidate
             }

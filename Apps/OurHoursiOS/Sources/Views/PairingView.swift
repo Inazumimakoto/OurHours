@@ -55,6 +55,8 @@ struct PairingFlow: View {
     @State private var errorMessage: String?
     @State private var showScanner = false
     @State private var scannedURL: String?
+    @State private var isPreparingInvite = false
+    @State private var invitePreparationTask: Task<Void, Never>?
 
     var body: some View {
         ScrollViewReader { scroll in
@@ -63,13 +65,31 @@ struct PairingFlow: View {
                     Color.clear.frame(height: 0).id("pairingTop")
                     switch stage {
                     case .choices:
-                        if model.snapshot.isPaired {
+                        if isPreparingInvite {
+                            ProgressView("共有スペースを準備中…")
+                                .font(FoamFont.regular(13.5, relativeTo: .footnote))
+                                .tint(FoamTheme.ink)
+                                .padding(16)
+                        } else if model.snapshot.isPaired {
                             existingPair
                         } else {
                             pairingChoices
                         }
                     case let .invite(url, existing):
                         InviteCodeCard(inviteURL: url, isTogether: model.isTogetherNow)
+                            .task(id: url) {
+                                let upgradedURL = existing
+                                    ? await model.ensureInviteShareURLForExistingPair()
+                                    : existingInviteURL
+                                guard let upgradedURL, !Task.isCancelled, stage == .invite(url, existing: existing),
+                                      upgradedURL != url else { return }
+                                stage = .invite(upgradedURL, existing: existing)
+                            }
+                            .onChange(of: model.snapshot.pairConfiguration?.cloudShareURL) {
+                                guard let upgradedURL = existingInviteURL, upgradedURL != url,
+                                      stage == .invite(url, existing: existing) else { return }
+                                stage = .invite(upgradedURL, existing: existing)
+                            }
                         if existing {
                             Button(onSkip == nil ? "閉じる" : "ホームへ戻る", action: onFinish)
                                 .buttonStyle(FoamPrimaryActionStyle())
@@ -112,6 +132,11 @@ struct PairingFlow: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
+            .onDisappear {
+                invitePreparationTask?.cancel()
+                invitePreparationTask = nil
+                isPreparingInvite = false
+            }
             .onChange(of: stage) { scroll.scrollTo("pairingTop", anchor: .top) }
             .onChange(of: errorMessage) {
                 if errorMessage != nil { scroll.scrollTo("pairingError", anchor: .bottom) }
@@ -197,6 +222,7 @@ struct PairingFlow: View {
                     .padding(.horizontal, 6)
                 Button(onSkip == nil ? "同意して招待QRコードを作成" : "招待QRコードを出す", systemImage: "qrcode", action: startInvite)
                     .buttonStyle(FoamPrimaryActionStyle())
+                    .disabled(isPreparingInvite)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -260,11 +286,26 @@ struct PairingFlow: View {
     }
 
     private func startInvite() {
-        do {
-            let url = try model.startInvitePairing()
-            move(to: .invite(url, existing: false))
-        } catch {
-            errorMessage = error.localizedDescription
+        guard !isPreparingInvite else { return }
+        errorMessage = nil
+        isPreparingInvite = true
+        invitePreparationTask = Task {
+            defer {
+                if !Task.isCancelled {
+                    invitePreparationTask = nil
+                    isPreparingInvite = false
+                }
+            }
+            do {
+                let url = try await model.prepareInvitePairing()
+                guard !Task.isCancelled else { return }
+                move(to: .invite(url, existing: false))
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -326,6 +367,7 @@ private struct InviteCodeCard: View {
         }
         .onChange(of: inviteURL, initial: true) {
             qrImage = PairingPayloadCodec.generateQRCodeCGImage(from: inviteURL)
+            copied = false
         }
     }
 }

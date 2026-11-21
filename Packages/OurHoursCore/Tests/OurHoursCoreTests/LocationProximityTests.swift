@@ -387,4 +387,38 @@ struct LocationProximityTests {
         )
         #expect(matcherResult.isEmpty)
     }
+
+    @Test func mergeRemoteOwnBucketsUnionsVisitsAndPointsWithoutDuplication() throws {
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocationTimelineStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let key = LocationDayKey.utcDayKey(for: now)
+        let arrival = now.addingTimeInterval(-3600)
+        let local = LocationVisitRecord(latitude: 35, longitude: 135, horizontalAccuracy: 50,
+                                       arrivedAt: arrival, recordedAt: arrival)
+        let update = LocationVisitRecord(latitude: 35.0001, longitude: 135, horizontalAccuracy: 10,
+                                         arrivedAt: arrival.addingTimeInterval(90), departedAt: now, recordedAt: now)
+        let extra = LocationVisitRecord(latitude: 36, longitude: 135, horizontalAccuracy: 5,
+                                        arrivedAt: now, recordedAt: now)
+        let point = LocationPointSample(timestamp: arrival, latitude: 35, longitude: 135,
+                                        horizontalAccuracy: 50, source: .foregroundFix)
+        let better = LocationPointSample(timestamp: arrival.addingTimeInterval(10), latitude: 35, longitude: 135,
+                                         horizontalAccuracy: 5, source: .manualSyncFix)
+        let separate = LocationPointSample(timestamp: now, latitude: 35, longitude: 135,
+                                          horizontalAccuracy: 50, source: .foregroundFix)
+        try store.recordVisit(local, role: .partnerA, now: arrival)
+        try store.recordPoint(point, role: .partnerA, now: arrival)
+        let bucket = DayLocationBucket(dayKeyUTC: key, role: .partnerA, updatedAt: now,
+                                       visits: [extra, update], points: [separate, better])
+        let first = try store.mergeRemoteOwnBuckets([key: bucket], role: .partnerA, now: now)
+        let merged = try #require(first.snapshot.localBuckets[key])
+        #expect(first.didChange && merged.updatedAt == now)
+        #expect(merged.visits.map(\.id) == [local.id, extra.id])
+        #expect(merged.visits.first?.arrivedAt == arrival && merged.visits.first?.departedAt == now)
+        #expect(merged.visits.first?.latitude == update.latitude && merged.visits.first?.horizontalAccuracy == 10)
+        #expect(merged.points == [better, separate])
+        #expect(try store.load() == first.snapshot)
+        #expect(try !store.mergeRemoteOwnBuckets([key: bucket], role: .partnerA, now: now).didChange)
+    }
 }

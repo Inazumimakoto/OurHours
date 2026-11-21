@@ -83,6 +83,48 @@ public struct DayLocationBucket: Codable, Sendable, Equatable {
         self.points = points
     }
 
+    public func merged(with remote: DayLocationBucket) -> DayLocationBucket {
+        var result = self
+        for visit in remote.visits {
+            let index = result.visits.firstIndex { $0.id == visit.id } ?? result.visits.firstIndex { existing in
+                abs(existing.arrivedAt.timeIntervalSince(visit.arrivedAt)) <= 90 &&
+                    LocationProximityMatcher.haversineMeters(lat1: existing.latitude, lon1: existing.longitude,
+                                                             lat2: visit.latitude, lon2: visit.longitude) <= 60
+            }
+            guard let index else {
+                result.visits.append(visit)
+                continue
+            }
+            let existing = result.visits[index]
+            let best = visit.horizontalAccuracy < existing.horizontalAccuracy ? visit : existing
+            let departure = visit.recordedAt >= existing.recordedAt
+                ? visit.departedAt ?? existing.departedAt : existing.departedAt ?? visit.departedAt
+            var arrival = min(existing.arrivedAt, visit.arrivedAt)
+            if let departure, arrival >= departure { arrival = departure.addingTimeInterval(-300) }
+            result.visits[index] = LocationVisitRecord(
+                id: existing.id, latitude: best.latitude, longitude: best.longitude,
+                horizontalAccuracy: best.horizontalAccuracy, arrivedAt: arrival, departedAt: departure,
+                recordedAt: max(existing.recordedAt, visit.recordedAt)
+            )
+        }
+        for point in remote.points {
+            let index = result.points.firstIndex { $0.id == point.id } ?? result.points.firstIndex { existing in
+                abs(existing.timestamp.timeIntervalSince(point.timestamp)) < 180 &&
+                    LocationProximityMatcher.haversineMeters(lat1: existing.latitude, lon1: existing.longitude,
+                                                             lat2: point.latitude, lon2: point.longitude) <= 20
+            }
+            if let index {
+                if point.horizontalAccuracy < result.points[index].horizontalAccuracy { result.points[index] = point }
+            } else {
+                result.points.append(point)
+            }
+        }
+        result.visits.sort { ($0.arrivedAt, $0.id.uuidString) < ($1.arrivedAt, $1.id.uuidString) }
+        result.points.sort { ($0.timestamp, $0.id.uuidString) < ($1.timestamp, $1.id.uuidString) }
+        result.updatedAt = max(updatedAt, remote.updatedAt)
+        return result
+    }
+
     public var isEmpty: Bool {
         visits.isEmpty && points.isEmpty
     }

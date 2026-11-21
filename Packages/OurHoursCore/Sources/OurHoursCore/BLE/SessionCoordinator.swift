@@ -26,6 +26,29 @@ public struct SessionCoordinator: Sendable {
         self.sessions = sessions
     }
 
+    @discardableResult
+    public mutating func mergeRecoveredSessions(_ recovered: [EncounterSession]) -> Bool {
+        var changed = false
+        var indices = Dictionary(sessions.indices.map { (sessions[$0].id, $0) }, uniquingKeysWith: { first, _ in first })
+        for item in recovered where item.status != .active {
+            if let index = indices[item.id] {
+                guard sessions[index].pairID == item.pairID, sessions[index].status == .unknownEnd,
+                      item.status == .completed, let end = item.endedAt else { continue }
+                sessions[index].status = .completed
+                sessions[index].endedAt = end
+                sessions[index].endReason = item.endReason
+            } else {
+                indices[item.id] = sessions.count
+                sessions.append(item)
+            }
+            changed = true
+        }
+        if changed {
+            sessions.sort { ($0.startedAt, $0.id.uuidString) < ($1.startedAt, $1.id.uuidString) }
+        }
+        return changed
+    }
+
     public var activeSession: EncounterSession? {
         sessions.last { $0.status == .active }
     }

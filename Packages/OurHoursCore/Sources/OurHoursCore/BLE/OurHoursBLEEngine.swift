@@ -108,6 +108,27 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         }
     }
 
+    public func importRecoveredSessions(_ recovered: [EncounterSession]) {
+        guard !recovered.isEmpty else { return }
+        onQueue {
+            guard coordinator.mergeRecoveredSessions(recovered) else { return }
+            persistSessions()
+            publish()
+        }
+    }
+
+    public func loadPendingPurges() -> [PairConfiguration] {
+        configStore.loadPendingPurges()
+    }
+
+    public func enqueuePendingPurge(_ configuration: PairConfiguration) {
+        configStore.enqueuePendingPurge(configuration)
+    }
+
+    public func removePendingPurge(_ configuration: PairConfiguration) {
+        configStore.removePendingPurge(configuration)
+    }
+
     public func currentSnapshot() -> EngineSnapshot {
         onQueue { makeSnapshot() }
     }
