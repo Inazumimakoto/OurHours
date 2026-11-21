@@ -38,6 +38,8 @@ struct HomeView: View {
             FoamMascotView(
                 isTogether: model.isTogetherNow,
                 isPaired: model.snapshot.isPaired,
+                localColor: model.localBubbleColor,
+                partnerColor: model.partnerBubbleColor,
                 onTapBurst: onBurst
             )
             Spacer()

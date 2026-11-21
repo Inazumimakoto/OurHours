@@ -26,7 +26,8 @@ actor CloudKitHistorySync {
         config: PairConfiguration,
         localSessions: [EncounterSession],
         journalStore: JournalStore,
-        peerSyncStore: PartnerSyncStore
+        peerSyncStore: PartnerSyncStore,
+        isPairActive: @escaping @MainActor @Sendable () -> Bool = { true }
     ) async -> HistorySyncOutcome {
         guard config.sharedSecret.count == 32, config.keyEpoch >= 1 else {
             return HistorySyncOutcome(state: .failed("ペア設定が不正です"), journal: nil, peerSessions: nil)
@@ -47,30 +48,41 @@ actor CloudKitHistorySync {
             )
             let fetchResults = try await database.records(for: [peerRecordID])
 
-            var loadedPeerSessions: [SyncedPeerSession]?
+            var decryptedEnvelope: PartnerSyncEnvelope?
             if case let .success(peerRecord) = fetchResults[peerRecordID],
                let payload = peerRecord["payload"] as? Data,
                let envelope = try? PartnerPayloadCipher.decrypt(payload, using: config),
                envelope.pairID == config.pairID,
                envelope.senderRole == config.localRole.opposite {
-                let cache = try peerSyncStore.savePeerSessions(
-                    pairID: config.pairID,
-                    peerRole: config.localRole.opposite,
-                    sessions: envelope.bleSessions,
-                    now: .now
-                )
-                loadedPeerSessions = cache.sessions
-                _ = try journalStore.mergeRemote(envelope.journal)
+                decryptedEnvelope = envelope
             }
 
-            let mergedJournal = try journalStore.load()
-            let scopedJournal = JournalSnapshot(
-                manualRecords: mergedJournal.manualRecords.filter { $0.pairID == nil || $0.pairID == config.pairID },
-                sessionOverrides: mergedJournal.sessionOverrides,
-                dailyMemos: mergedJournal.dailyMemos,
-                deletedManualRecords: mergedJournal.deletedManualRecords,
-                deletedMemoDays: mergedJournal.deletedMemoDays
-            )
+            let envelopeToMerge = decryptedEnvelope
+            let syncPrep: (peerSessions: [SyncedPeerSession]?, mergedJournal: JournalSnapshot)? = try await MainActor.run {
+                guard isPairActive() else { return nil }
+                var peerSessions: [SyncedPeerSession]?
+                if let envelope = envelopeToMerge {
+                    let cache = try peerSyncStore.savePeerSessions(
+                        pairID: config.pairID,
+                        peerRole: config.localRole.opposite,
+                        sessions: envelope.bleSessions,
+                        now: .now
+                    )
+                    peerSessions = cache.sessions
+                    var remoteJournal = envelope.journal
+                    remoteJournal.roleProfiles.removeValue(forKey: config.localRole.shortCode)
+                    _ = try journalStore.mergeRemote(remoteJournal)
+                }
+                return (peerSessions, try journalStore.load())
+            }
+
+            guard let syncPrep else {
+                return HistorySyncOutcome(state: .idle, journal: nil, peerSessions: nil)
+            }
+            let loadedPeerSessions = syncPrep.peerSessions
+            let mergedJournal = syncPrep.mergedJournal
+            var scopedJournal = mergedJournal
+            scopedJournal.manualRecords = mergedJournal.manualRecords.filter { $0.pairID == nil || $0.pairID == config.pairID }
             let scopedBLE = localSessions
                 .filter { $0.pairID == config.pairID && $0.status != .active }
                 .map(SyncedPeerSession.init(from:))
@@ -91,12 +103,20 @@ actor CloudKitHistorySync {
             ownRecord["updatedAt"] = localEnvelope.updatedAt as CKRecordValue
             ownRecord["schemaVersion"] = NSNumber(value: PartnerSyncEnvelope.currentSchemaVersion)
 
+            guard await isPairActive() else {
+                return HistorySyncOutcome(state: .idle, journal: nil, peerSessions: nil)
+            }
+
             _ = try await database.modifyRecords(
                 saving: [ownRecord],
                 deleting: [],
                 savePolicy: .allKeys,
                 atomically: false
             )
+            guard await isPairActive() else {
+                await purgeOwnRecord(config: config)
+                return HistorySyncOutcome(state: .idle, journal: nil, peerSessions: nil)
+            }
 
             let fallbackPeerCount = loadedPeerSessions?.count
                 ?? (try? peerSyncStore.load())?.sessions.count(where: { $0.pairID == config.pairID })

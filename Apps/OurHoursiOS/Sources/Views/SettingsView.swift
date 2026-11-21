@@ -3,12 +3,16 @@ import SwiftUI
 import UIKit
 
 struct SettingsView: View {
+    var onReplayOnboarding: (() -> Void)? = nil
+
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var showPairing = false
     @State private var confirmUnpair = false
     @State private var confirmClear = false
+    @State private var nicknameDraft = ""
+    @FocusState private var editingNickname: Bool
 
     private var appVersionLabel: String {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -33,6 +37,7 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(spacing: 16) {
                         releasePairingSection
+                        releaseProfileSection
                         releaseRecordingAndSyncSection(state: state)
                         releaseVersionRow
                         if state.isPaired {
@@ -56,6 +61,7 @@ struct SettingsView: View {
                     .padding(.top, 6)
                     .padding(.bottom, 34)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
         }
         .font(FoamFont.medium(16))
@@ -63,6 +69,50 @@ struct SettingsView: View {
         .preferredColorScheme(.light)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showPairing) { PairingView() }
+    }
+
+    private var releaseProfileSection: some View {
+        ReleaseBubbleCard(title: "プロフィールと記念日", isTogether: model.isTogetherNow, seed: 2.1) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("自分のシャボン玉")
+                    .font(FoamFont.bold(15, relativeTo: .subheadline))
+                BubbleColorSwatches(selection: model.localBubbleColor, onSelect: model.setLocalBubbleColor)
+
+                Divider()
+                OptionalProfileDateRow(
+                    title: "誕生日",
+                    date: Binding(get: { model.localBirthday }, set: { model.setLocalBirthday($0) })
+                )
+
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("相手の呼び方（任意）")
+                        .font(FoamFont.bold(15, relativeTo: .subheadline))
+                    TextField("相手の呼び方（任意）", text: $nicknameDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($editingNickname)
+                        .onAppear { nicknameDraft = model.partnerNickname }
+                        .onChange(of: nicknameDraft) {
+                            if editingNickname { model.setPartnerNickname(nicknameDraft) }
+                        }
+                        .onChange(of: model.partnerNickname) {
+                            if !editingNickname { nicknameDraft = model.partnerNickname }
+                        }
+                        .onChange(of: editingNickname) {
+                            if !editingNickname {
+                                model.setPartnerNickname(nicknameDraft)
+                                nicknameDraft = model.partnerNickname
+                            }
+                        }
+                }
+
+                Divider()
+                OptionalProfileDateRow(
+                    title: "記念日",
+                    date: Binding(get: { model.anniversaryDate }, set: { model.setAnniversaryDate($0) })
+                )
+            }
+        }
     }
 
     // MARK: - Top Navigation
@@ -389,6 +439,11 @@ struct SettingsView: View {
 
                 // 5. 診断
                 debugBlock(title: "診断") {
+                    if let onReplayOnboarding {
+                        Button("オンボードをもう一度見る", action: onReplayOnboarding)
+                            .font(.subheadline.weight(.semibold))
+                        Divider()
+                    }
                     NavigationLink {
                         LogsView()
                     } label: {
@@ -458,7 +513,70 @@ struct SettingsView: View {
     }
 }
 
-private struct ReleaseBubbleCard<Content: View>: View {
+struct OptionalProfileDateRow: View {
+    let title: String
+    var unsetTitle: String? = nil
+    var clearTitle = "クリア"
+    @Binding var date: CalendarDateValue?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                setExpanded(!expanded)
+            } label: {
+                HStack(spacing: 8) {
+                    Text(date == nil ? (unsetTitle ?? title) : title)
+                    Spacer(minLength: 4)
+                    if date != nil || unsetTitle == nil {
+                        Text(date?.formattedJapanese ?? "未設定")
+                            .foregroundStyle(FoamTheme.ink.opacity(0.72))
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                .font(FoamFont.bold(15, relativeTo: .subheadline))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(expanded ? "展開中" : "折りたたみ")
+
+            if expanded {
+                DatePicker(title, selection: Binding(
+                    get: { min(date?.toDate() ?? .now, .now) },
+                    set: { date = CalendarDateValue(date: $0) }
+                ), in: ...Date.now, displayedComponents: .date)
+                .datePickerStyle(.compact)
+
+                HStack(spacing: 16) {
+                    if date == nil {
+                        Button("今日に設定") { date = CalendarDateValue(date: .now) }
+                    }
+                    Spacer(minLength: 4)
+                    Button(clearTitle) {
+                        if date != nil { date = nil }
+                        setExpanded(false)
+                    }
+                    .disabled(date == nil && unsetTitle == nil)
+                }
+                .font(FoamFont.bold(14, relativeTo: .subheadline))
+                .frame(minHeight: 44)
+            }
+        }
+    }
+
+    private func setExpanded(_ value: Bool) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            expanded = value
+        }
+    }
+}
+
+struct ReleaseBubbleCard<Content: View>: View {
     let title: String
     let isTogether: Bool
     let seed: Double

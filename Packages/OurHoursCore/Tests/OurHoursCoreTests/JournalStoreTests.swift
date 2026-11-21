@@ -9,6 +9,29 @@ struct JournalStoreTests {
     private let start = Date(timeIntervalSince1970: 1_700_000_000)
     private var end: Date { start.addingTimeInterval(1_800.5) }
 
+    @Test func profileAndAnniversaryMutationsPersistWithMonotonicTimestamps() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let day = CalendarDateValue(year: 2000, month: 2, day: 29)
+        let created = try store.setRoleProfile(role: .partnerA, bubbleColor: .mint, birthday: day)
+        let original = try #require(created.profile(for: .partnerA))
+        #expect(original.birthday == day)
+        #expect(original.bubbleColor == .mint)
+        try store.setRoleProfile(role: .partnerB, bubbleColor: .lavender, birthday: nil)
+        let edited = try store.setRoleProfile(role: .partnerA, bubbleColor: .coral, birthday: nil)
+        let profile = try #require(edited.profile(for: .partnerA))
+        #expect(profile.updatedAt > original.updatedAt)
+        #expect(profile.bubbleColor == .coral && profile.birthday == nil)
+        #expect(edited.profile(for: .partnerB)?.bubbleColor == .lavender)
+
+        let saved = try #require(try store.setAnniversary(day).anniversary)
+        #expect(saved.date == day)
+        let cleared = try #require(try store.setAnniversary(nil).anniversary)
+        #expect(cleared.date == nil && cleared.updatedAt > saved.updatedAt)
+        let result = try store.clearRoleProfiles()
+        #expect(result.roleProfiles.isEmpty && result.anniversary == nil)
+        #expect(try store.load() == result)
+    }
+
     @Test func manualRecordsPersistEditsAndDeletion() throws {
         defer { try? FileManager.default.removeItem(at: store.directory) }
         #expect(try store.load() == JournalSnapshot())
@@ -110,5 +133,18 @@ struct JournalStoreTests {
         let records = try store.load().manualRecords
         #expect(records.count == 16)
         #expect(Set(records.map(\.id)).count == 16)
+    }
+
+    @Test func calendarDateValueAlwaysStoresGregorianDates() throws {
+        var japanese = Calendar(identifier: .japanese)
+        japanese.timeZone = CalendarDateValue.gregorianCurrent.timeZone
+        let reiwa8 = try #require(japanese.date(from: DateComponents(year: 8, month: 11, day: 21, hour: 12)))
+        let gregorianDate = CalendarDateValue(date: reiwa8)
+        #expect(gregorianDate == CalendarDateValue(year: 2026, month: 11, day: 21))
+        #expect(gregorianDate.formattedJapanese == "2026年11月21日")
+
+        let leapDay = CalendarDateValue(year: 2000, month: 2, day: 29)
+        let roundTrip = CalendarDateValue(date: leapDay.toDate())
+        #expect(roundTrip == leapDay)
     }
 }

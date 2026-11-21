@@ -1,3 +1,4 @@
+import CoreBluetooth
 import Observation
 import OurHoursCore
 import SwiftUI
@@ -6,6 +7,20 @@ import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class AppModel {
+    private enum DefaultsKey {
+        static let onboarding = "ourhours.hasCompletedOnboarding"
+        static let color = "ourhours.localBubbleColor"
+        static let birthday = "ourhours.localBirthday"
+        static let nickname = "ourhours.partnerNickname"
+    }
+
+    private let userDefaults: UserDefaults
+    private(set) var hasCompletedOnboarding: Bool
+    private(set) var localBubbleColor: BubbleColorTheme
+    private(set) var localBirthday: CalendarDateValue?
+    private(set) var partnerNickname: String
+    private(set) var bluetoothAuthorization = CBManager.authorization
+
     private let engine: OurHoursBLEEngine
     private(set) var snapshot: EngineSnapshot
     @ObservationIgnored private var subscription: Task<Void, Never>?
@@ -33,8 +48,24 @@ final class AppModel {
         peerSyncStore: PartnerSyncStore = PartnerSyncStore(),
         historySync: CloudKitHistorySync = CloudKitHistorySync(),
         locationStore: LocationTimelineStore = LocationTimelineStore(),
-        locationSync: CloudKitLocationSync = CloudKitLocationSync()
+        locationSync: CloudKitLocationSync = CloudKitLocationSync(),
+        userDefaults: UserDefaults = .standard
     ) {
+        self.userDefaults = userDefaults
+        let initialSnapshot = engine.currentSnapshot()
+        snapshot = initialSnapshot
+        if userDefaults.object(forKey: DefaultsKey.onboarding) != nil {
+            hasCompletedOnboarding = userDefaults.bool(forKey: DefaultsKey.onboarding)
+        } else {
+            let completed = initialSnapshot.isPaired
+            hasCompletedOnboarding = completed
+            userDefaults.set(completed, forKey: DefaultsKey.onboarding)
+        }
+        localBubbleColor = userDefaults.string(forKey: DefaultsKey.color).flatMap(BubbleColorTheme.init(rawValue:)) ?? .skyBlue
+        localBirthday = userDefaults.data(forKey: DefaultsKey.birthday).flatMap {
+            try? JSONDecoder().decode(CalendarDateValue.self, from: $0)
+        }
+        partnerNickname = userDefaults.string(forKey: DefaultsKey.nickname) ?? ""
         self.engine = engine
         self.journalStore = journalStore
         self.peerSyncStore = peerSyncStore
@@ -53,9 +84,12 @@ final class AppModel {
             }
         )
 
-        snapshot = engine.currentSnapshot()
-        do { journal = try journalStore.load() }
-        catch { journalError = error.localizedDescription }
+        do {
+            journal = try journalStore.load()
+            if let role = initialSnapshot.pairConfiguration?.localRole, journal.profile(for: role) == nil {
+                journal = try journalStore.setRoleProfile(role: role, bubbleColor: localBubbleColor, birthday: localBirthday)
+            }
+        } catch { journalError = error.localizedDescription }
 
         if let pairID = snapshot.pairConfiguration?.pairID,
            let cachedPeer = try? peerSyncStore.load(),
@@ -81,6 +115,7 @@ final class AppModel {
                 let previousNonActive = self.snapshot.sessions.filter { $0.status != .active }
                 let nextNonActive = value.sessions.filter { $0.status != .active }
                 self.snapshot = value
+                self.refreshPermissionStates()
                 if value.isPaired && nextNonActive != previousNonActive {
                     self.scheduleHistorySync(delay: .seconds(1.5))
                 }
@@ -92,6 +127,63 @@ final class AppModel {
         subscription?.cancel()
         scheduledSyncTask?.cancel()
         scheduledHistorySyncTask?.cancel()
+    }
+
+    private var partnerProfile: SyncedRoleProfile? {
+        guard let role = snapshot.pairConfiguration?.localRole else { return nil }
+        return journal.profile(for: role.opposite)
+    }
+
+    var partnerBubbleColor: BubbleColorTheme? { partnerProfile?.bubbleColor }
+    var partnerBirthday: CalendarDateValue? { partnerProfile?.birthday }
+    var anniversaryDate: CalendarDateValue? { journal.anniversary?.date }
+
+    var displayPartnerName: String {
+        let trimmed = partnerNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "パートナー" : trimmed
+    }
+
+    func completeOnboarding() {
+        hasCompletedOnboarding = true
+        userDefaults.set(true, forKey: DefaultsKey.onboarding)
+    }
+
+    func setLocalBubbleColor(_ color: BubbleColorTheme) {
+        localBubbleColor = color
+        userDefaults.set(color.rawValue, forKey: DefaultsKey.color)
+        publishLocalProfile()
+    }
+
+    func setLocalBirthday(_ birthday: CalendarDateValue?) {
+        localBirthday = birthday
+        let encoded = birthday.flatMap { try? JSONEncoder().encode($0) }
+        userDefaults.set(encoded, forKey: DefaultsKey.birthday)
+        publishLocalProfile()
+    }
+
+    private func publishLocalProfile() {
+        guard let role = snapshot.pairConfiguration?.localRole else { return }
+        write { try $0.setRoleProfile(role: role, bubbleColor: localBubbleColor, birthday: localBirthday) }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func setPartnerNickname(_ nickname: String) {
+        partnerNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        userDefaults.set(partnerNickname, forKey: DefaultsKey.nickname)
+    }
+
+    func setAnniversaryDate(_ date: CalendarDateValue?) {
+        write { try $0.setAnniversary(date) }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func requestBluetoothPermission() {
+        engine.start()
+        refreshPermissionStates()
+    }
+
+    func refreshPermissionStates() {
+        bluetoothAuthorization = CBManager.authorization
     }
 
     var isAutoRecordingEnabled: Bool { snapshot.isAutoRecordingEnabled }
@@ -342,6 +434,7 @@ final class AppModel {
         } else {
             peerSessions = []
         }
+        write { try $0.setRoleProfile(role: configuration.localRole, bubbleColor: localBubbleColor, birthday: localBirthday) }
         engine.start()
         scheduleHistorySync(delay: .seconds(1))
         if locationMonitor.isEnabled {
@@ -353,6 +446,10 @@ final class AppModel {
     func unpair() {
         let previousConfig = snapshot.pairConfiguration
         engine.unpair()
+        snapshot = engine.currentSnapshot()
+        guard !snapshot.isPaired else { return }
+        write { try $0.clearRoleProfiles() }
+        setPartnerNickname("")
         scheduledSyncTask?.cancel()
         scheduledHistorySyncTask?.cancel()
         _ = try? locationStore.clearAll()
@@ -387,6 +484,7 @@ final class AppModel {
     }
 
     func handleForegroundActivation() {
+        refreshPermissionStates()
         engine.handleForegroundActivation()
         locationMonitor.startIfAuthorized()
         if snapshot.isPaired {
@@ -430,11 +528,22 @@ final class AppModel {
             config: config,
             localSessions: snapshot.sessions,
             journalStore: journalStore,
-            peerSyncStore: peerSyncStore
+            peerSyncStore: peerSyncStore,
+            isPairActive: { [weak self] in
+                self?.snapshot.pairConfiguration == config
+            }
         )
+        guard snapshot.pairConfiguration == config else { return }
         historySyncState = outcome.state
         if let updatedJournal = outcome.journal {
-            journal = updatedJournal
+            // Local edits can reach disk while CloudKit is uploading its earlier snapshot.
+            journal = (try? journalStore.load()) ?? updatedJournal
+            let profile = journal.profile(for: config.localRole)
+            if profile?.bubbleColor != localBubbleColor || profile?.birthday != localBirthday {
+                publishLocalProfile()
+            } else if journal != updatedJournal {
+                scheduleHistorySyncIfPaired()
+            }
         }
         if let updatedPeer = outcome.peerSessions {
             peerSessions = updatedPeer

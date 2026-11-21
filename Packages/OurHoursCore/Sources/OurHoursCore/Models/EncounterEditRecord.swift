@@ -55,11 +55,20 @@ public struct JournalSnapshot: Codable, Sendable, Equatable {
     public var deletedManualRecords: [UUID: Date]
     public var deletedMemoDays: [String: Date]
 
+    public var roleProfiles: [String: SyncedRoleProfile]
+    public var anniversary: SyncedAnniversary?
+
+    public func profile(for role: PeerRole) -> SyncedRoleProfile? {
+        roleProfiles[role.shortCode]
+    }
+
     private enum CodingKeys: String, CodingKey {
         case manualRecords
         case sessionOverrides
         case dailyMemos
         case deletedManualRecords
+        case roleProfiles
+        case anniversary
         case deletedMemoDays
     }
 
@@ -68,8 +77,12 @@ public struct JournalSnapshot: Codable, Sendable, Equatable {
         sessionOverrides: [UUID: SessionOverride] = [:],
         dailyMemos: [String: DailyMemo] = [:],
         deletedManualRecords: [UUID: Date] = [:],
-        deletedMemoDays: [String: Date] = [:]
+        deletedMemoDays: [String: Date] = [:],
+        roleProfiles: [String: SyncedRoleProfile] = [:],
+        anniversary: SyncedAnniversary? = nil
     ) {
+        self.roleProfiles = roleProfiles
+        self.anniversary = anniversary
         self.manualRecords = manualRecords
         self.sessionOverrides = sessionOverrides
         self.dailyMemos = dailyMemos
@@ -79,6 +92,8 @@ public struct JournalSnapshot: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.roleProfiles = try container.decodeIfPresent([String: SyncedRoleProfile].self, forKey: .roleProfiles) ?? [:]
+        self.anniversary = try container.decodeIfPresent(SyncedAnniversary.self, forKey: .anniversary)
         self.manualRecords = try container.decodeIfPresent([ManualEncounterRecord].self, forKey: .manualRecords) ?? []
         self.sessionOverrides = try container.decodeIfPresent([UUID: SessionOverride].self, forKey: .sessionOverrides) ?? [:]
         self.dailyMemos = try container.decodeIfPresent([String: DailyMemo].self, forKey: .dailyMemos) ?? [:]

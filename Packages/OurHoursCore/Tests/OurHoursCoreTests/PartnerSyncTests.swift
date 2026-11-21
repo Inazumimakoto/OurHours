@@ -67,10 +67,16 @@ struct PartnerSyncTests {
                 sessionOverrides: [:],
                 dailyMemos: ["2026-11-21": DailyMemo(dayKey: "2026-11-21", text: String(repeating: "あわ", count: 40), updatedAt: base)],
                 deletedManualRecords: [UUID(): base],
-                deletedMemoDays: ["2026-11-20": base]
+                deletedMemoDays: ["2026-11-20": base],
+                roleProfiles: ["A": SyncedRoleProfile(bubbleColor: .mint, birthday: nil, updatedAt: base)],
+                anniversary: SyncedAnniversary(date: CalendarDateValue(year: 2020, month: 5, day: 1), updatedAt: base)
             )
         )
 
+        let journalData = try JSONEncoder().encode(envelope.journal)
+        let object = try #require(JSONSerialization.jsonObject(with: journalData) as? [String: Any])
+        let profiles = try #require(object["roleProfiles"] as? [String: Any])
+        #expect(profiles["A"] != nil)
         let ciphertext = try PartnerPayloadCipher.encrypt(envelope, using: configA)
         let decrypted = try PartnerPayloadCipher.decrypt(ciphertext, using: configB)
         #expect(decrypted == envelope)
@@ -94,14 +100,64 @@ struct PartnerSyncTests {
         var jsonObj = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         jsonObj.removeValue(forKey: "deletedManualRecords")
         jsonObj.removeValue(forKey: "deletedMemoDays")
+        jsonObj.removeValue(forKey: "roleProfiles")
+        jsonObj.removeValue(forKey: "anniversary")
         let legacyData = try JSONSerialization.data(withJSONObject: jsonObj)
 
         let decoded = try JSONDecoder().decode(JournalSnapshot.self, from: legacyData)
+        #expect(decoded.roleProfiles.isEmpty)
+        #expect(decoded.anniversary == nil)
         #expect(decoded.manualRecords.isEmpty)
         #expect(decoded.sessionOverrides.count == 1)
         #expect(decoded.dailyMemos["2026-11-21"]?.text == "Legacy")
         #expect(decoded.deletedManualRecords.isEmpty)
         #expect(decoded.deletedMemoDays.isEmpty)
+    }
+
+    @Test func profilesMergePerRoleWithDeterministicTies() {
+        let base = Date(timeIntervalSinceReferenceDate: 100)
+        let earlier = CalendarDateValue(year: 1999, month: 2, day: 1)
+        let later = CalendarDateValue(year: 2000, month: 5, day: 10)
+        let original = SyncedRoleProfile(bubbleColor: .mint, birthday: earlier, updatedAt: base)
+        let near = base.addingTimeInterval(0.0004)
+        let others = [
+            SyncedRoleProfile(bubbleColor: .coral, birthday: nil, updatedAt: near),
+            SyncedRoleProfile(bubbleColor: .skyBlue, birthday: earlier, updatedAt: near),
+            SyncedRoleProfile(bubbleColor: .mint, birthday: later, updatedAt: near)
+        ]
+        let local = JournalSnapshot(roleProfiles: ["A": original])
+        let peer = JournalSnapshot(roleProfiles: ["B": others[0]])
+        #expect(JournalMerger.merge(local: local, remote: peer).roleProfiles == ["A": original, "B": others[0]])
+        let newer = SyncedRoleProfile(bubbleColor: .skyBlue, birthday: nil, updatedAt: base.addingTimeInterval(0.001))
+        for candidate in others + [newer] {
+            let remote = JournalSnapshot(roleProfiles: ["A": candidate])
+            let expected = candidate == newer ? newer : original
+            #expect(JournalMerger.merge(local: local, remote: remote).profile(for: .partnerA) == expected)
+            #expect(JournalMerger.merge(local: remote, remote: local).profile(for: .partnerA) == expected)
+        }
+    }
+
+    @Test func anniversaryClearsAndTiesMergeInBothDirections() {
+        let base = Date(timeIntervalSinceReferenceDate: 100)
+        let day = CalendarDateValue(year: 2024, month: 10, day: 1)
+        let original = SyncedAnniversary(date: day, updatedAt: base)
+        let near = base.addingTimeInterval(0.0004)
+        let clear = SyncedAnniversary(date: nil, updatedAt: base.addingTimeInterval(0.001))
+        let candidates = [
+            SyncedAnniversary(date: nil, updatedAt: near),
+            SyncedAnniversary(date: CalendarDateValue(year: 2025, month: 1, day: 1), updatedAt: near),
+            clear
+        ]
+        let local = JournalSnapshot(anniversary: original)
+        for candidate in candidates {
+            let remote = JournalSnapshot(anniversary: candidate)
+            let expected = candidate == clear ? clear : original
+            #expect(JournalMerger.merge(local: local, remote: remote).anniversary == expected)
+            #expect(JournalMerger.merge(local: remote, remote: local).anniversary == expected)
+        }
+        let restored = SyncedAnniversary(date: day, updatedAt: base.addingTimeInterval(0.002))
+        #expect(JournalMerger.merge(local: JournalSnapshot(anniversary: clear),
+                                    remote: JournalSnapshot(anniversary: restored)).anniversary == restored)
     }
 
     @Test func journalMergerHandlesManualAdditionsTombstonesAndReEdits() {

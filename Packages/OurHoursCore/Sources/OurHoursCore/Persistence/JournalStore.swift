@@ -21,6 +21,34 @@ public final class JournalStore: Sendable {
     }
 
     @discardableResult
+    public func setRoleProfile(
+        role: PeerRole, bubbleColor: BubbleColorTheme, birthday: CalendarDateValue?
+    ) throws -> JournalSnapshot {
+        try modify { snapshot in
+            let ts = Self.monotonicNow(after: snapshot.roleProfiles[role.shortCode]?.updatedAt ?? .distantPast)
+            snapshot.roleProfiles[role.shortCode] = SyncedRoleProfile(
+                bubbleColor: bubbleColor, birthday: birthday, updatedAt: ts
+            )
+        }
+    }
+
+    @discardableResult
+    public func clearRoleProfiles() throws -> JournalSnapshot {
+        try modify {
+            $0.roleProfiles = [:]
+            $0.anniversary = nil
+        }
+    }
+
+    @discardableResult
+    public func setAnniversary(_ date: CalendarDateValue?) throws -> JournalSnapshot {
+        try modify { snapshot in
+            let ts = Self.monotonicNow(after: snapshot.anniversary?.updatedAt ?? .distantPast)
+            snapshot.anniversary = SyncedAnniversary(date: date, updatedAt: ts)
+        }
+    }
+
+    @discardableResult
     public func addManualRecord(pairID: UUID?, startedAt: Date, endedAt: Date) throws -> JournalSnapshot {
         guard endedAt > startedAt else { throw JournalStoreError.invalidTimeRange }
         return try modify { snapshot in

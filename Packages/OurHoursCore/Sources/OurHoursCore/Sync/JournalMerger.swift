@@ -10,8 +10,42 @@ public enum JournalMerger {
             sessionOverrides: overrides,
             dailyMemos: memos.memos,
             deletedManualRecords: manual.tombstones,
-            deletedMemoDays: memos.tombstones
+            deletedMemoDays: memos.tombstones,
+            roleProfiles: local.roleProfiles.merging(remote.roleProfiles, uniquingKeysWith: preferredProfile),
+            anniversary: preferredAnniversary(local.anniversary, remote.anniversary)
         )
+    }
+
+    private static func preferredProfile(_ lhs: SyncedRoleProfile, _ rhs: SyncedRoleProfile) -> SyncedRoleProfile {
+        if abs(lhs.updatedAt.timeIntervalSince(rhs.updatedAt)) >= 0.0005 {
+            return lhs.updatedAt > rhs.updatedAt ? lhs : rhs
+        }
+        if (lhs.birthday == nil) != (rhs.birthday == nil) {
+            return lhs.birthday != nil ? lhs : rhs
+        }
+        if lhs.bubbleColor != rhs.bubbleColor {
+            return lhs.bubbleColor.rawValue < rhs.bubbleColor.rawValue ? lhs : rhs
+        }
+        if let left = lhs.birthday, let right = rhs.birthday, left != right {
+            return left < right ? lhs : rhs
+        }
+        return lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
+    }
+
+    private static func preferredAnniversary(
+        _ lhs: SyncedAnniversary?, _ rhs: SyncedAnniversary?
+    ) -> SyncedAnniversary? {
+        guard let lhs else { return rhs }
+        guard let rhs else { return lhs }
+        if abs(lhs.updatedAt.timeIntervalSince(rhs.updatedAt)) >= 0.0005 {
+            return lhs.updatedAt > rhs.updatedAt ? lhs : rhs
+        }
+        switch (lhs.date, rhs.date) {
+        case (.some, nil): return lhs
+        case (nil, .some): return rhs
+        case let (left?, right?) where left != right: return left < right ? lhs : rhs
+        default: return lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
+        }
     }
 
     private static func mergeManualRecords(

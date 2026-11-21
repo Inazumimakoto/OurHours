@@ -8,6 +8,8 @@ struct RootFoamView: View {
     @State private var lastBurstTimestamp = Date.distantPast
     @State private var showSettings = false
     @State private var showPairing = false
+    @State private var showOnboarding = false
+    @State private var pendingOnboardingReplay = false
     @State private var month = Date.now
     @State private var pendingDayRoute: SelectedDayRoute?
 
@@ -57,14 +59,30 @@ struct RootFoamView: View {
         }
         .font(FoamFont.medium(16))
         .foregroundStyle(FoamTheme.ink)
-        .sheet(isPresented: $showSettings) {
+        .onAppear(perform: showOnboardingIfNeeded)
+        .onChange(of: appModel.hasCompletedOnboarding, showOnboardingIfNeeded)
+        .fullScreenCover(isPresented: $showOnboarding) { OnboardingView() }
+        .sheet(isPresented: $showSettings, onDismiss: replayOnboardingIfPending) {
             NavigationStack {
-                SettingsView()
+                SettingsView(onReplayOnboarding: {
+                    pendingOnboardingReplay = true
+                    showSettings = false
+                })
             }
             .font(FoamFont.medium(16))
         }
         .sheet(isPresented: $showPairing) { PairingView() }
         .environment(appModel)
+    }
+
+    private func showOnboardingIfNeeded() {
+        if !appModel.hasCompletedOnboarding { showOnboarding = true }
+    }
+
+    private func replayOnboardingIfPending() {
+        guard pendingOnboardingReplay else { return }
+        pendingOnboardingReplay = false
+        showOnboarding = true
     }
 
     private func emitTabSplash(_ originX: CGFloat) {
