@@ -317,40 +317,85 @@ final class AppModel {
         } catch { journalError = error.localizedDescription }
     }
 
-    func previewMerge(editing target: ResolvedEncounter?, startedAt: Date, endedAt: Date) -> EncounterMergePlan {
-        EncounterMergePlanner.plan(
-            editing: target,
+    func currentResolvedEncounter(for encounter: ResolvedEncounter) -> ResolvedEncounter? {
+        let probeIDs = Set(encounter.linkedSessionIDs.isEmpty ? [encounter.id] : encounter.linkedSessionIDs)
+        return resolvedEncounters.first { candidate in
+            candidate.id == encounter.id || !probeIDs.isDisjoint(with: candidate.linkedSessionIDs)
+        }
+    }
+
+    func previewMerge(editing target: ResolvedEncounter?, startedAt: Date, endedAt: Date?, now: Date = .now) -> EncounterMergePlan {
+        let resolvedTarget: ResolvedEncounter?
+        if let target {
+            guard let current = currentResolvedEncounter(for: target) else {
+                return EncounterMergePlan(target: target, absorbed: [], mergedStart: startedAt, mergedEnd: endedAt)
+            }
+            resolvedTarget = current
+        } else {
+            resolvedTarget = nil
+        }
+        return EncounterMergePlanner.plan(
+            editing: resolvedTarget,
             proposedStart: startedAt,
             proposedEnd: endedAt,
-            among: resolvedEncounters
+            among: resolvedEncounters,
+            now: now
         )
     }
 
-    func addManualEncounter(startedAt: Date, endedAt: Date) {
-        let plan = previewMerge(editing: nil, startedAt: startedAt, endedAt: endedAt)
+    func addManualEncounter(startedAt: Date, endedAt: Date, now: Date = .now) {
+        let plan = previewMerge(editing: nil, startedAt: startedAt, endedAt: endedAt, now: now)
         applyMergePlan(plan)
     }
 
-    func updateResolvedEncounter(_ encounter: ResolvedEncounter, startedAt: Date, endedAt: Date) {
-        let plan = previewMerge(editing: encounter, startedAt: startedAt, endedAt: endedAt)
+    func updateResolvedEncounter(_ encounter: ResolvedEncounter, startedAt: Date, endedAt: Date, now: Date = .now) {
+        guard let current = currentResolvedEncounter(for: encounter) else { return }
+        let plan = previewMerge(editing: current, startedAt: startedAt, endedAt: endedAt, now: now)
         applyMergePlan(plan)
     }
 
     func deleteResolvedEncounter(_ encounter: ResolvedEncounter) {
-        switch encounter.source {
+        let current = currentResolvedEncounter(for: encounter) ?? encounter
+        switch current.source {
         case let .manual(id):
             write { try $0.deleteManualRecord(id: id) }
         case .auto, .peerAuto, .peerCompleted, .autoEdited, .locationMatched:
-            let ids = encounter.linkedSessionIDs.isEmpty ? [encounter.id] : encounter.linkedSessionIDs
+            let ids = current.linkedSessionIDs.isEmpty ? [current.id] : current.linkedSessionIDs
             let updates = Dictionary(uniqueKeysWithValues: ids.map { ($0, SessionOverrideAction.deleted) })
             write { try $0.setSessionOverrides(updates) }
         }
         scheduleHistorySyncIfPaired()
     }
 
-    func completeUnknownEnd(_ encounter: ResolvedEncounter, startedAt: Date? = nil, endedAt: Date) {
-        let plan = previewMerge(editing: encounter, startedAt: startedAt ?? encounter.startedAt, endedAt: endedAt)
+    func completeUnknownEnd(_ encounter: ResolvedEncounter, startedAt: Date? = nil, endedAt: Date, now: Date = .now) {
+        guard let current = currentResolvedEncounter(for: encounter) else { return }
+        let plan = previewMerge(editing: current, startedAt: startedAt ?? current.startedAt, endedAt: endedAt, now: now)
         applyMergePlan(plan)
+    }
+
+    func updateActiveEncounterStart(_ encounter: ResolvedEncounter, startedAt: Date, now: Date = .now) {
+        guard let current = currentResolvedEncounter(for: encounter) else { return }
+        switch current.status {
+        case .completed:
+            guard let end = current.endedAt, end > startedAt else {
+                journalError = "記録が終了したため、終了時刻より前に調整してください"
+                return
+            }
+            updateResolvedEncounter(current, startedAt: startedAt, endedAt: end, now: now)
+        case .active, .unknownEnd:
+            guard startedAt <= max(current.startedAt, now) else {
+                journalError = "開始時刻は現在時刻より前に設定してください"
+                return
+            }
+            if current.status == .active {
+                applyMergePlan(previewMerge(editing: current, startedAt: startedAt, endedAt: nil, now: now))
+            } else {
+                var updates: [UUID: SessionOverrideAction] = [current.id: .adjustedStart(startedAt: startedAt)]
+                for id in current.linkedSessionIDs where id != current.id { updates[id] = .deleted }
+                write { try $0.setSessionOverrides(updates) }
+                scheduleHistorySyncIfPaired()
+            }
+        }
     }
 
     func saveMemo(dayKey: String, text: String) {
@@ -359,47 +404,34 @@ final class AppModel {
     }
 
     private func applyMergePlan(_ plan: EncounterMergePlan) {
+        let survivor = plan.survivingActiveEncounter ?? plan.target
+        var removed = plan.absorbed.filter { $0.id != survivor?.id }
+        if let target = plan.target, target.id != survivor?.id { removed.append(target) }
+
         var deleteManualIDs: [UUID] = []
-        var absorbedSessionIDs: [UUID] = []
-        for enc in plan.absorbed {
-            switch enc.source {
-            case let .manual(id):
+        var sessionOverrideUpdates: [UUID: SessionOverrideAction] = [:]
+        for encounter in removed {
+            if case let .manual(id) = encounter.source {
                 deleteManualIDs.append(id)
-            case .auto, .peerAuto, .peerCompleted, .autoEdited, .locationMatched:
-                let ids = enc.linkedSessionIDs.isEmpty ? [enc.id] : enc.linkedSessionIDs
-                absorbedSessionIDs.append(contentsOf: ids)
+            } else {
+                let ids = encounter.linkedSessionIDs.isEmpty ? [encounter.id] : encounter.linkedSessionIDs
+                for id in ids { sessionOverrideUpdates[id] = .deleted }
             }
         }
 
-        let keepManualID: UUID?
-        let createManual: Bool
-        var sessionOverrideUpdates: [UUID: SessionOverrideAction] = [:]
-
-        if let target = plan.target {
-            switch target.source {
-            case let .manual(id):
-                keepManualID = id
-                createManual = false
-                for sid in absorbedSessionIDs {
-                    sessionOverrideUpdates[sid] = .deleted
-                }
-            case .auto, .peerAuto, .peerCompleted, .autoEdited, .locationMatched:
-                keepManualID = nil
-                createManual = false
-                let targetIDs = target.linkedSessionIDs.isEmpty ? [target.id] : target.linkedSessionIDs
-                sessionOverrideUpdates[target.id] = .edited(startedAt: plan.mergedStart, endedAt: plan.mergedEnd)
-                for sid in targetIDs where sid != target.id {
-                    sessionOverrideUpdates[sid] = .deleted
-                }
-                for sid in absorbedSessionIDs where sid != target.id {
-                    sessionOverrideUpdates[sid] = .deleted
-                }
-            }
+        var keepManualID: UUID?
+        if let active = plan.survivingActiveEncounter {
+            for id in active.linkedSessionIDs { sessionOverrideUpdates[id] = .deleted }
+            sessionOverrideUpdates[active.id] = .adjustedStart(startedAt: plan.mergedStart)
         } else {
-            keepManualID = nil
-            createManual = true
-            for sid in absorbedSessionIDs {
-                sessionOverrideUpdates[sid] = .deleted
+            guard let end = plan.mergedEnd, end > plan.mergedStart else { return }
+            if let target = plan.target {
+                if case let .manual(id) = target.source {
+                    keepManualID = id
+                } else {
+                    for id in target.linkedSessionIDs { sessionOverrideUpdates[id] = .deleted }
+                    sessionOverrideUpdates[target.id] = .edited(startedAt: plan.mergedStart, endedAt: end)
+                }
             }
         }
 
@@ -407,7 +439,7 @@ final class AppModel {
             try store.applyMergedMutation(
                 pairID: snapshot.pairConfiguration?.pairID,
                 keepManualID: keepManualID,
-                createManual: createManual,
+                createManual: survivor == nil,
                 mergedStart: plan.mergedStart,
                 mergedEnd: plan.mergedEnd,
                 deleteManualIDs: deleteManualIDs,

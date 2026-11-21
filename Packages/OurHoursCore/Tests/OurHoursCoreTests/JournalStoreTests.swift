@@ -84,6 +84,37 @@ struct JournalStoreTests {
         #expect(try store.load() == JournalSnapshot())
     }
 
+    @Test func activeMergePersistsAdjustmentAndTombstonesAtomically() throws {
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let pairID = UUID()
+        let initial = try store.addManualRecord(pairID: pairID, startedAt: start, endedAt: end)
+        let manual = try #require(initial.manualRecords.first)
+        let completed = EncounterSession(pairID: pairID, startedAt: start, endedAt: end, status: .completed,
+                                         connectionPath: .autoReconnect, startRole: .central)
+        let active = EncounterSession(pairID: pairID, startedAt: end, connectionPath: .autoReconnect, startRole: .central)
+        for (keep, create) in [(manual.id as UUID?, false), (nil, true)] {
+            #expect(throws: JournalStoreError.invalidTimeRange) {
+                try store.applyMergedMutation(
+                    pairID: pairID, keepManualID: keep, createManual: create, mergedStart: start, mergedEnd: nil,
+                    deleteManualIDs: [manual.id], sessionOverrideUpdates: [completed.id: .deleted]
+                )
+            }
+        }
+        #expect(try store.load() == initial)
+        let saved = try store.applyMergedMutation(
+            pairID: pairID, keepManualID: nil, createManual: false, mergedStart: start, mergedEnd: nil,
+            deleteManualIDs: [manual.id], sessionOverrideUpdates: [completed.id: .deleted, active.id: .adjustedStart(startedAt: start)]
+        )
+        let persisted = try JournalStore(directory: store.directory).load()
+        #expect(persisted == saved)
+        #expect(persisted.manualRecords.isEmpty && persisted.deletedManualRecords[manual.id] != nil)
+        #expect(persisted.sessionOverrides[completed.id]?.action == .deleted)
+        let resolved = EncounterCalendarAggregator.resolveEncounters(autoSessions: [completed, active], journal: persisted)
+        #expect(resolved.map(\.id) == [active.id])
+        let survivor = try #require(resolved.first)
+        #expect(survivor.status == .active && survivor.startedAt == start && survivor.endedAt == nil)
+    }
+
     @Test func rejectedMutationsPreserveStoredSnapshot() throws {
         defer { try? FileManager.default.removeItem(at: store.directory) }
         let saved = try store.addManualRecord(pairID: nil, startedAt: start, endedAt: end)

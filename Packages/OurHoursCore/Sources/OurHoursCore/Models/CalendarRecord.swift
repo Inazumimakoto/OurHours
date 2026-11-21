@@ -127,6 +127,11 @@ public enum EncounterCalendarAggregator {
                     id: session.id, source: .autoEdited(sessionID: session.id), linkedSessionIDs: [session.id],
                     startedAt: startedAt, endedAt: endedAt, status: .completed, connectionPath: session.connectionPath
                 )
+            case let .adjustedStart(startedAt):
+                return ResolvedEncounter(
+                    id: session.id, source: .autoEdited(sessionID: session.id), linkedSessionIDs: [session.id],
+                    startedAt: startedAt, endedAt: nil, status: .active, connectionPath: session.connectionPath
+                )
             case nil:
                 return ResolvedEncounter(
                     id: session.id, source: .auto(sessionID: session.id), linkedSessionIDs: [session.id],
@@ -156,6 +161,13 @@ public enum EncounterCalendarAggregator {
                 return ResolvedEncounter(
                     id: loc.id, source: .autoEdited(sessionID: loc.id), linkedSessionIDs: [loc.id],
                     startedAt: startedAt, endedAt: endedAt, status: .completed, connectionPath: nil
+                )
+            case let .adjustedStart(startedAt):
+                let validEnd = loc.endedAt > startedAt ? loc.endedAt : nil
+                return ResolvedEncounter(
+                    id: loc.id, source: .autoEdited(sessionID: loc.id), linkedSessionIDs: [loc.id],
+                    startedAt: startedAt, endedAt: validEnd,
+                    status: validEnd == nil ? .unknownEnd : .completed, connectionPath: nil
                 )
             case nil:
                 guard loc.endedAt > loc.startedAt else { return nil }
@@ -315,18 +327,20 @@ public enum EncounterCalendarAggregator {
         locationSessions: [LocationMatchedSession] = [],
         journal: JournalSnapshot
     ) -> Date? {
-        let activeCandidates = autoSessions.filter { session in
-            guard session.status == .active else { return false }
-            return journal.sessionOverrides[session.id] == nil
+        let candidates: [(session: EncounterSession, start: Date, adjusted: Bool)] = autoSessions.compactMap { session in
+            guard session.status == .active else { return nil }
+            switch journal.sessionOverrides[session.id]?.action {
+            case nil: return (session, session.startedAt, false)
+            case let .adjustedStart(start): return (session, start, true)
+            case .deleted, .edited: return nil
+            }
         }
-        guard let activeSession = activeCandidates.min(by: {
-            if $0.startedAt == $1.startedAt { return $0.id.uuidString < $1.id.uuidString }
-            return $0.startedAt < $1.startedAt
-        }) else {
-            return nil
-        }
+        guard let chosen = candidates.min(by: {
+            ($0.start, $0.session.id.uuidString) < ($1.start, $1.session.id.uuidString)
+        }) else { return nil }
+        if chosen.adjusted { return chosen.start }
 
-        let pairID = activeSession.pairID
+        let pairID = chosen.session.pairID
         let resolvedForPair = resolveEncounters(
             autoSessions: autoSessions.filter { $0.pairID == pairID },
             peerSessions: peerSessions.filter { $0.pairID == pairID },
@@ -342,7 +356,7 @@ public enum EncounterCalendarAggregator {
             return (encounter.startedAt, end)
         }
 
-        var effectiveStart = activeSession.startedAt
+        var effectiveStart = chosen.start
         var extended = true
         while extended {
             extended = false
@@ -500,6 +514,29 @@ public enum EncounterCalendarAggregator {
                     connectionPath: localPath
                 )
                 return (enc, pairID)
+            }
+            let hasNewestAdjustedStart = newest.contains {
+                if case .adjustedStart = $0.action { return true }
+                return false
+            }
+            if hasNewestAdjustedStart {
+                let adjusted: [(start: Date, id: String)] = groupOverrides.compactMap { override in
+                    guard case let .adjustedStart(start) = override.action else { return nil }
+                    return (start, override.sessionID.uuidString)
+                }
+                if let chosen = adjusted.min(by: { ($0.start, $0.id) < ($1.start, $1.id) }) {
+                    let end = group
+                        .filter { $0.status == .completed }
+                        .compactMap(\.endedAt)
+                        .filter { $0 > chosen.start }
+                        .max()
+                    let encounter = ResolvedEncounter(
+                        id: primaryID, source: .autoEdited(sessionID: primaryID), linkedSessionIDs: allIDs,
+                        startedAt: chosen.start, endedAt: end,
+                        status: end == nil ? .unknownEnd : .completed, connectionPath: localPath
+                    )
+                    return (encounter, pairID)
+                }
             }
             return nil
         }

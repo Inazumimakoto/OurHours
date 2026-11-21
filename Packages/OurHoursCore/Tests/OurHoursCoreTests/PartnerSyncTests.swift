@@ -39,6 +39,8 @@ struct PartnerSyncTests {
         #expect(recordA != LocationPayloadCipher.dayRecordName(for: configA, role: .partnerA, utcDayKey: "2026-11-21"))
 
         let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let sessionID = UUID()
+        let adjustment = SessionOverride(sessionID: sessionID, action: .adjustedStart(startedAt: base), updatedAt: base)
         let envelope = PartnerSyncEnvelope(
             pairID: configA.pairID,
             senderRole: .partnerA,
@@ -64,7 +66,7 @@ struct PartnerSyncTests {
                         updatedAt: base
                     )
                 ],
-                sessionOverrides: [:],
+                sessionOverrides: [sessionID: adjustment],
                 dailyMemos: ["2026-11-21": DailyMemo(dayKey: "2026-11-21", text: String(repeating: "あわ", count: 40), updatedAt: base)],
                 deletedManualRecords: [UUID(): base],
                 deletedMemoDays: ["2026-11-20": base],
@@ -241,6 +243,29 @@ struct PartnerSyncTests {
         } else {
             Issue.record("Expected sid2 tie-break override to prefer .edited over .deleted")
         }
+    }
+
+    @Test func simultaneousSessionOverridesConvergeInEitherOrder() {
+        let id = UUID()
+        let time = Date(timeIntervalSinceReferenceDate: 1)
+        let later = time.addingTimeInterval(60)
+        let ranked: [SessionOverrideAction] = [.deleted, .adjustedStart(startedAt: later),
+                                               .adjustedStart(startedAt: time), .edited(startedAt: time, endedAt: later)]
+        func journal(_ action: SessionOverrideAction, _ timestamp: Date) -> JournalSnapshot {
+            JournalSnapshot(sessionOverrides: [id: SessionOverride(sessionID: id, action: action, updatedAt: timestamp)])
+        }
+        for (index, winner) in ranked.enumerated() {
+            let preferred = journal(winner, time)
+            for other in ranked.prefix(index) {
+                let competing = journal(other, time.addingTimeInterval(0.0001))
+                #expect(JournalMerger.merge(local: preferred, remote: competing) == preferred)
+                #expect(JournalMerger.merge(local: competing, remote: preferred) == preferred)
+            }
+        }
+        let older = journal(.adjustedStart(startedAt: time), time)
+        let newer = journal(.adjustedStart(startedAt: time), time.addingTimeInterval(0.0001))
+        #expect(JournalMerger.merge(local: older, remote: newer) == newer)
+        #expect(JournalMerger.merge(local: newer, remote: older) == newer)
     }
 
     @Test func deduplicatesOverlappingAndSplitCrossDeviceBLESessions() throws {

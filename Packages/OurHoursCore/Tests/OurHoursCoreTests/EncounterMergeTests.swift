@@ -72,10 +72,56 @@ struct EncounterMergeTests {
             editing: e1,
             proposedStart: t13,
             proposedEnd: t19,
-            among: [e1, uFollowing, activeLive]
+            among: [e1, uFollowing, activeLive], now: t19
         )
-        #expect(swallowUnknown.absorbed.map(\.id) == [uFollowing.id])
-        #expect(swallowUnknown.mergedStart == t13 && swallowUnknown.mergedEnd == t19)
+        #expect(Set(swallowUnknown.absorbed.map(\.id)) == [uFollowing.id, activeLive.id])
+        #expect(swallowUnknown.survivingActiveEncounter == activeLive)
+        #expect(swallowUnknown.mergedStart == t13 && swallowUnknown.mergedEnd == nil)
+    }
+
+    @Test func activeStartMovesAcrossTouchingChainWithoutExpandingPastNow() {
+        func t(_ seconds: Double) -> Date { Date(timeIntervalSinceReferenceDate: seconds) }
+        let early = resolved(start: t(1), end: t(3))
+        let bridge = resolved(start: t(3), end: t(5))
+        let unknown = resolved(start: t(2), end: nil, status: .unknownEnd)
+        let active = resolved(start: t(8), end: nil, status: .active)
+        let straddlesNow = resolved(start: t(10), end: t(15))
+        let manualID = UUID()
+        let future = resolved(id: manualID, source: .manual(recordID: manualID), start: t(11), end: t(14))
+        let plan = EncounterMergePlanner.plan(
+            editing: active, proposedStart: t(5), proposedEnd: nil,
+            among: [unknown, early, bridge, active, straddlesNow, future], now: t(10)
+        )
+        #expect(plan.survivingActiveEncounter == active)
+        #expect(plan.mergedStart == t(1) && plan.mergedEnd == nil)
+        #expect(plan.absorbed == [early, unknown, bridge, straddlesNow])
+
+        let forward = EncounterMergePlanner.plan(editing: active, proposedStart: t(10), proposedEnd: nil, among: [active], now: t(10))
+        #expect(forward.keepsActiveSession && forward.mergedStart == t(10) && forward.mergedEnd == nil)
+        let invalid = EncounterMergePlanner.plan(editing: active, proposedStart: t(11), proposedEnd: nil, among: [active], now: t(10))
+        #expect(!invalid.keepsActiveSession && !invalid.didMerge && invalid.mergedEnd == nil)
+    }
+
+    @Test func earlierTargetsAndManualDraftsCanTouchActiveSession() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        let contact = start.addingTimeInterval(120)
+        let active = resolved(start: contact, end: nil, status: .active)
+        let targets: [ResolvedEncounter?] = [
+            nil, resolved(start: start, end: start.addingTimeInterval(30)),
+            resolved(start: start, end: nil, status: .unknownEnd)
+        ]
+        for target in targets {
+            let records = [active] + [target].compactMap { $0 }
+            let touch = EncounterMergePlanner.plan(
+                editing: target, proposedStart: start, proposedEnd: contact, among: records, now: contact
+            )
+            #expect(touch.absorbed == [active] && touch.survivingActiveEncounter == active)
+            #expect(touch.mergedStart == start && touch.mergedEnd == nil)
+            let gap = EncounterMergePlanner.plan(
+                editing: target, proposedStart: start, proposedEnd: contact.addingTimeInterval(-1), among: records, now: contact
+            )
+            #expect(!gap.didMerge && !gap.keepsActiveSession)
+        }
     }
 
     @Test func atomicMergedMutationsResolveCleanlyAcrossBLEAndManualAndSync() throws {
@@ -102,7 +148,7 @@ struct EncounterMergeTests {
         let planA = EncounterMergePlanner.plan(editing: targetA, proposedStart: t13, proposedEnd: t17, among: preResolvedA)
         #expect(planA.didMerge)
 
-        var overridesA: [UUID: SessionOverrideAction] = [targetA.id: .edited(startedAt: planA.mergedStart, endedAt: planA.mergedEnd)]
+        var overridesA: [UUID: SessionOverrideAction] = [targetA.id: .edited(startedAt: planA.mergedStart, endedAt: try #require(planA.mergedEnd))]
         for sid in targetA.linkedSessionIDs where sid != targetA.id { overridesA[sid] = .deleted }
         for absEnc in planA.absorbed {
             for sid in (absEnc.linkedSessionIDs.isEmpty ? [absEnc.id] : absEnc.linkedSessionIDs) where sid != targetA.id {
@@ -159,7 +205,7 @@ struct EncounterMergeTests {
             pairID: pairID, keepManualID: nil, createManual: false,
             mergedStart: planC.mergedStart, mergedEnd: planC.mergedEnd,
             deleteManualIDs: [absorbedManual.id],
-            sessionOverrideUpdates: [localS1.id: .edited(startedAt: planC.mergedStart, endedAt: planC.mergedEnd)]
+            sessionOverrideUpdates: [localS1.id: .edited(startedAt: planC.mergedStart, endedAt: try #require(planC.mergedEnd))]
         )
         #expect(jC.deletedManualRecords[absorbedManual.id] != nil)
         let syncedWithStaleManual = JournalMerger.merge(local: jC, remote: staleManualSnap)

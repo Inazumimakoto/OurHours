@@ -4,20 +4,24 @@ public struct EncounterMergePlan: Sendable, Equatable {
     public let target: ResolvedEncounter?
     public let absorbed: [ResolvedEncounter]
     public let mergedStart: Date
-    public let mergedEnd: Date
+    public let mergedEnd: Date?
+    public let survivingActiveEncounter: ResolvedEncounter?
 
     public var didMerge: Bool { !absorbed.isEmpty }
+    public var keepsActiveSession: Bool { survivingActiveEncounter != nil }
 
     public init(
         target: ResolvedEncounter?,
         absorbed: [ResolvedEncounter],
         mergedStart: Date,
-        mergedEnd: Date
+        mergedEnd: Date?,
+        survivingActiveEncounter: ResolvedEncounter? = nil
     ) {
         self.target = target
         self.absorbed = absorbed
         self.mergedStart = mergedStart
         self.mergedEnd = mergedEnd
+        self.survivingActiveEncounter = survivingActiveEncounter
     }
 }
 
@@ -25,65 +29,63 @@ public enum EncounterMergePlanner {
     public static func plan(
         editing target: ResolvedEncounter?,
         proposedStart: Date,
-        proposedEnd: Date,
-        among allEncounters: [ResolvedEncounter]
+        proposedEnd: Date?,
+        among allEncounters: [ResolvedEncounter],
+        now: Date = Date()
     ) -> EncounterMergePlan {
-        guard proposedEnd > proposedStart else {
-            return EncounterMergePlan(
-                target: target,
-                absorbed: [],
-                mergedStart: proposedStart,
-                mergedEnd: proposedEnd
-            )
+        var mergedStart = proposedStart
+        var searchEnd: Date
+        var survivingActive: ResolvedEncounter?
+        let editingActive = target?.status == .active
+        if let target, editingActive {
+            searchEnd = max(target.startedAt, now)
+            guard proposedStart <= searchEnd else {
+                return EncounterMergePlan(target: target, absorbed: [], mergedStart: proposedStart, mergedEnd: nil)
+            }
+            survivingActive = target
+        } else {
+            guard let proposedEnd, proposedEnd > proposedStart else {
+                return EncounterMergePlan(target: target, absorbed: [], mergedStart: proposedStart, mergedEnd: proposedEnd)
+            }
+            searchEnd = proposedEnd
         }
 
-        var mergedStart = proposedStart
-        var mergedEnd = proposedEnd
-        var absorbedIDs = Set<UUID>()
-        var expanded = true
+        func startsEarlier(_ lhs: ResolvedEncounter, _ rhs: ResolvedEncounter) -> Bool {
+            (lhs.startedAt, lhs.id.uuidString) < (rhs.startedAt, rhs.id.uuidString)
+        }
 
+        var absorbedIDs = Set<UUID>()
+        var absorbed: [ResolvedEncounter] = []
+        var expanded = true
         while expanded {
             expanded = false
-            for candidate in allEncounters {
-                guard candidate.id != target?.id,
-                      candidate.status != .active,
-                      !absorbedIDs.contains(candidate.id) else {
-                    continue
-                }
-
+            for candidate in allEncounters where candidate.id != target?.id && !absorbedIDs.contains(candidate.id) {
+                let end: Date
                 switch candidate.status {
                 case .completed:
-                    guard let cEnd = candidate.endedAt, cEnd > candidate.startedAt else { continue }
-                    if candidate.startedAt <= mergedEnd && cEnd >= mergedStart {
-                        absorbedIDs.insert(candidate.id)
-                        mergedStart = min(mergedStart, candidate.startedAt)
-                        mergedEnd = max(mergedEnd, cEnd)
-                        expanded = true
-                    }
+                    guard let completedEnd = candidate.endedAt, completedEnd > candidate.startedAt else { continue }
+                    end = completedEnd
                 case .unknownEnd:
-                    if candidate.startedAt >= mergedStart && candidate.startedAt <= mergedEnd {
-                        absorbedIDs.insert(candidate.id)
-                        mergedStart = min(mergedStart, candidate.startedAt)
-                        expanded = true
-                    }
+                    end = candidate.startedAt
                 case .active:
-                    continue
+                    guard !editingActive else { continue }
+                    end = max(candidate.startedAt, now)
                 }
+                guard candidate.startedAt <= searchEnd, end >= mergedStart else { continue }
+                absorbedIDs.insert(candidate.id)
+                absorbed.append(candidate)
+                mergedStart = min(mergedStart, candidate.startedAt)
+                if !editingActive { searchEnd = max(searchEnd, end) }
+                if candidate.status == .active, survivingActive.map({ startsEarlier(candidate, $0) }) ?? true {
+                    survivingActive = candidate
+                }
+                expanded = true
             }
         }
 
-        let absorbed = allEncounters
-            .filter { absorbedIDs.contains($0.id) }
-            .sorted {
-                if $0.startedAt == $1.startedAt { return $0.id.uuidString < $1.id.uuidString }
-                return $0.startedAt < $1.startedAt
-            }
-
         return EncounterMergePlan(
-            target: target,
-            absorbed: absorbed,
-            mergedStart: mergedStart,
-            mergedEnd: mergedEnd
+            target: target, absorbed: absorbed.sorted(by: startsEarlier), mergedStart: mergedStart,
+            mergedEnd: survivingActive == nil ? searchEnd : nil, survivingActiveEncounter: survivingActive
         )
     }
 }

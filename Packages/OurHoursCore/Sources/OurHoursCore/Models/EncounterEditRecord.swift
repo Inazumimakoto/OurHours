@@ -20,6 +20,7 @@ public struct ManualEncounterRecord: Codable, Sendable, Equatable, Identifiable 
 
 public enum SessionOverrideAction: Codable, Sendable, Equatable {
     case edited(startedAt: Date, endedAt: Date)
+    case adjustedStart(startedAt: Date)
     case deleted
 }
 

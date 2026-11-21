@@ -145,11 +145,15 @@ public final class JournalStore: Sendable {
         keepManualID: UUID?,
         createManual: Bool,
         mergedStart: Date,
-        mergedEnd: Date,
+        mergedEnd: Date?,
         deleteManualIDs: [UUID],
         sessionOverrideUpdates: [UUID: SessionOverrideAction]
     ) throws -> JournalSnapshot {
-        guard mergedEnd > mergedStart else { throw JournalStoreError.invalidTimeRange }
+        if let mergedEnd {
+            guard mergedEnd > mergedStart else { throw JournalStoreError.invalidTimeRange }
+        } else if keepManualID != nil || createManual {
+            throw JournalStoreError.invalidTimeRange
+        }
         for action in sessionOverrideUpdates.values {
             if case let .edited(startedAt, endedAt) = action, !(endedAt > startedAt) {
                 throw JournalStoreError.invalidTimeRange
@@ -181,7 +185,7 @@ public final class JournalStore: Sendable {
             }
             let ts = Self.monotonicNow(after: floors)
 
-            if let keepManualID,
+            if let keepManualID, let mergedEnd,
                let idx = snapshot.manualRecords.firstIndex(where: { $0.id == keepManualID }) {
                 let existing = snapshot.manualRecords[idx]
                 snapshot.manualRecords[idx] = ManualEncounterRecord(
@@ -193,7 +197,7 @@ public final class JournalStore: Sendable {
                     updatedAt: ts
                 )
                 snapshot.deletedManualRecords[keepManualID] = nil
-            } else if createManual {
+            } else if createManual, let mergedEnd {
                 snapshot.manualRecords.append(ManualEncounterRecord(
                     id: UUID(),
                     pairID: pairID,

@@ -129,13 +129,16 @@ public enum JournalMerger {
             return lhs.updatedAt > rhs.updatedAt ? lhs : rhs
         }
         switch (lhs.action, rhs.action) {
-        case (.edited, .deleted):
+        case (.edited, .deleted), (.edited, .adjustedStart), (.adjustedStart, .deleted):
             return lhs
-        case (.deleted, .edited):
+        case (.deleted, .edited), (.adjustedStart, .edited), (.deleted, .adjustedStart):
             return rhs
         case let (.edited(ls, le), .edited(rs, re)):
             if ls != rs { return ls < rs ? lhs : rhs }
             if le != re { return le < re ? lhs : rhs }
+            return lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
+        case let (.adjustedStart(ls), .adjustedStart(rs)):
+            if ls != rs { return ls < rs ? lhs : rhs }
             return lhs.updatedAt >= rhs.updatedAt ? lhs : rhs
         case (.deleted, .deleted):
             return lhs.updatedAt >= rhs.updatedAt ? lhs : rhs

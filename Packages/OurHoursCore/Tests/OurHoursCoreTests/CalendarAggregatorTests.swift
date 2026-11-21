@@ -301,6 +301,56 @@ struct CalendarAggregatorTests {
         #expect(Set(unknownResolved[1].linkedSessionIDs) == [uBeforeS1.id, s1.id])
     }
 
+    @Test func adjustedStartSurvivesActiveCompletedAndUnknownEndStates() throws {
+        let start = Date(timeIntervalSinceReferenceDate: 100)
+        let adjusted = start.addingTimeInterval(10)
+        let previous = session(start.addingTimeInterval(-100), start)
+        var live = session(start, nil, status: .active)
+        let action = SessionOverride(sessionID: live.id, action: .adjustedStart(startedAt: adjusted), updatedAt: start)
+        let journal = JournalSnapshot(sessionOverrides: [live.id: action])
+
+        func resolve() throws -> ResolvedEncounter {
+            let entries = EncounterCalendarAggregator.resolveEncounters(autoSessions: [previous, live], journal: journal)
+            #expect(entries.count == 2)
+            return try #require(entries.first { $0.id == live.id })
+        }
+        let active = try resolve()
+        #expect(active.source == .autoEdited(sessionID: live.id) && active.status == .active)
+        #expect(active.startedAt == adjusted && active.endedAt == nil)
+        #expect(EncounterCalendarAggregator.coalescedActiveSessionStart(autoSessions: [previous, live], journal: journal) == adjusted)
+
+        live.status = .unknownEnd
+        let unknown = try resolve()
+        #expect(unknown.status == .unknownEnd && unknown.startedAt == adjusted && unknown.endedAt == nil)
+        live.status = .completed
+        live.endedAt = start.addingTimeInterval(500)
+        let completed = try resolve()
+        #expect(completed.status == .completed && completed.startedAt == adjusted && completed.endedAt == live.endedAt)
+    }
+
+    @Test func linkedPeerCompletionAndNewerOverridesResolveAfterStartAdjustment() throws {
+        let start = Date(timeIntervalSinceReferenceDate: 100)
+        let adjusted = start.addingTimeInterval(-10)
+        let end = start.addingTimeInterval(3600)
+        let local = session(start, end, status: .completed)
+        let peer = SyncedPeerSession(id: UUID(), pairID: pairID, startedAt: start, endedAt: end.addingTimeInterval(60),
+                                     status: .completed, connectionPath: .autoReconnect)
+        var journal = JournalSnapshot(sessionOverrides: [
+            local.id: SessionOverride(sessionID: local.id, action: .adjustedStart(startedAt: adjusted), updatedAt: start)
+        ])
+        func resolve() -> [ResolvedEncounter] {
+            EncounterCalendarAggregator.resolveEncounters(autoSessions: [local], peerSessions: [peer], journal: journal)
+        }
+        let linked = try #require(resolve().first)
+        #expect(Set(linked.linkedSessionIDs) == [local.id, peer.id])
+        #expect(linked.status == .completed && linked.startedAt == adjusted && linked.endedAt == peer.endedAt)
+        journal.sessionOverrides[peer.id] = SessionOverride(sessionID: peer.id, action: .edited(startedAt: start, endedAt: end), updatedAt: end)
+        let edited = try #require(resolve().first)
+        #expect(edited.startedAt == start && edited.endedAt == end)
+        journal.sessionOverrides[peer.id] = SessionOverride(sessionID: peer.id, action: .deleted, updatedAt: end)
+        #expect(resolve().isEmpty)
+    }
+
     @Test func coalescedActiveSessionStartChainsShortGapsAndIsolatesPairs() throws {
         let base = try date("2026-11-21T10:00:00+09:00")
         let sFar = EncounterSession(
@@ -360,6 +410,103 @@ struct CalendarAggregatorTests {
                 autoSessions: [sFar, s1, s2],
                 journal: JournalSnapshot()
             ) == nil
+        )
+    }
+
+    @Test func adjustedStartGuardsZeroDurationAndPreservesEarliestSiblingEditAndUntouchedCoalesce() throws {
+        let base = try date("2026-11-21T09:00:00+09:00")
+        let t0955 = base.addingTimeInterval(55 * 60)
+        let t1000 = base.addingTimeInterval(60 * 60)
+        let t1030 = base.addingTimeInterval(90 * 60)
+        let t1100 = base.addingTimeInterval(120 * 60)
+
+        // 1. F-06: Linked peer ending before adjustedStart keeps local unknownEnd instead of 0-duration completion
+        let localUnknown = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: base, endedAt: nil,
+            status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let peerShort = SyncedPeerSession(
+            id: UUID(), pairID: pairID, startedAt: base, endedAt: t1000,
+            status: .completed, connectionPath: .autoReconnect
+        )
+        let locationShort = LocationMatchedSession(
+            id: UUID(), pairID: pairID, startedAt: base, endedAt: t1000, averageDistanceMeters: 5.0
+        )
+        let f06Journal = JournalSnapshot(
+            sessionOverrides: [
+                localUnknown.id: SessionOverride(sessionID: localUnknown.id, action: .adjustedStart(startedAt: t1030), updatedAt: t1030),
+                locationShort.id: SessionOverride(sessionID: locationShort.id, action: .adjustedStart(startedAt: t1030), updatedAt: t1030)
+            ]
+        )
+        let resolvedF06 = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [localUnknown],
+            peerSessions: [peerShort],
+            locationSessions: [locationShort],
+            journal: f06Journal
+        )
+        let bleF06 = try #require(resolvedF06.first { $0.linkedSessionIDs.contains(localUnknown.id) })
+        #expect(bleF06.startedAt == t1030)
+        #expect(bleF06.endedAt == nil)
+        #expect(bleF06.status == .unknownEnd)
+
+        let locF06 = try #require(resolvedF06.first { $0.id == locationShort.id })
+        #expect(locF06.startedAt == t1030)
+        #expect(locF06.endedAt == nil)
+        #expect(locF06.status == .unknownEnd)
+
+        // 2. F-11: Concurrent unlinked sibling .adjustedStart edits keep earliest start once linked; newer .deleted supersedes both
+        let localSibling = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: t1000, endedAt: t1100,
+            status: .completed, connectionPath: .autoReconnect, startRole: .central
+        )
+        let peerSibling = SyncedPeerSession(
+            id: UUID(), pairID: pairID, startedAt: t1000, endedAt: t1100,
+            status: .completed, connectionPath: .scanDiscovery
+        )
+        let mergedEarliestJournal = JournalSnapshot(
+            sessionOverrides: [
+                localSibling.id: SessionOverride(sessionID: localSibling.id, action: .adjustedStart(startedAt: base), updatedAt: t1000),
+                peerSibling.id: SessionOverride(sessionID: peerSibling.id, action: .adjustedStart(startedAt: t0955), updatedAt: t1030)
+            ]
+        )
+        let resolvedSibling = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [localSibling],
+            peerSessions: [peerSibling],
+            journal: mergedEarliestJournal
+        )
+        #expect(resolvedSibling.count == 1)
+        #expect(resolvedSibling[0].startedAt == base)
+        #expect(resolvedSibling[0].endedAt == t1100)
+        #expect(resolvedSibling[0].status == .completed)
+
+        var deletedSupersedes = mergedEarliestJournal
+        deletedSupersedes.sessionOverrides[peerSibling.id] = SessionOverride(
+            sessionID: peerSibling.id,
+            action: .deleted,
+            updatedAt: t1100
+        )
+        #expect(
+            EncounterCalendarAggregator.resolveEncounters(
+                autoSessions: [localSibling],
+                peerSessions: [peerSibling],
+                journal: deletedSupersedes
+            ).isEmpty
+        )
+
+        // 3. F-02: Untouched active session with non-zero seconds still coalesces across short gap
+        let completedMorning = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: base, endedAt: t0955,
+            status: .completed, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let activeWithSeconds = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: t1000.addingTimeInterval(45), endedAt: nil,
+            status: .active, connectionPath: .autoReconnect, startRole: .central
+        )
+        #expect(
+            EncounterCalendarAggregator.coalescedActiveSessionStart(
+                autoSessions: [completedMorning, activeWithSeconds],
+                journal: JournalSnapshot()
+            ) == base
         )
     }
 }

@@ -9,6 +9,20 @@ private enum TimelineTarget: Equatable {
     case existing(ResolvedEncounter)
     case draft
 
+    static func == (lhs: TimelineTarget, rhs: TimelineTarget) -> Bool {
+        switch (lhs, rhs) {
+        case (.draft, .draft):
+            return true
+        case let (.existing(a), .existing(b)):
+            if a.id == b.id { return true }
+            let aIDs = Set(a.linkedSessionIDs.isEmpty ? [a.id] : a.linkedSessionIDs)
+            let bIDs = Set(b.linkedSessionIDs.isEmpty ? [b.id] : b.linkedSessionIDs)
+            return !aIDs.isDisjoint(with: bIDs)
+        default:
+            return false
+        }
+    }
+
     var encounter: ResolvedEncounter? {
         if case let .existing(enc) = self { return enc }
         return nil
@@ -19,6 +33,7 @@ private struct ActiveKnobDrag {
     let target: TimelineTarget
     let edge: TimelineKnobEdge
     let dayStart: Date
+    let referenceNow: Date
     let fixedOtherDate: Date
     let originalStartDate: Date
     let originalEndDate: Date?
@@ -38,7 +53,7 @@ private struct PendingKnobAdjustment: Equatable {
     let originalEnd: Date?
     let originalStatus: SessionStatus
     var proposedStart: Date
-    var proposedEnd: Date
+    var proposedEnd: Date?
 }
 
 private struct InlineTimeEditorState: Identifiable {
@@ -49,26 +64,23 @@ private struct InlineTimeEditorState: Identifiable {
     let originalStart: Date
     let originalEnd: Date?
     let hasUnknownOriginalEnd: Bool
+    let isActiveTarget: Bool
+    let referenceNow: Date
     var startHour: Int
     var startMinute: Int
     var endHour: Int
     var endMinute: Int
     var didTouchStart: Bool
     var didTouchEnd: Bool
+    var didChangeWheel = false
 
     mutating func setFocus(_ newFocus: TimelineKnobEdge) {
         focus = newFocus
-        if newFocus == .start { didTouchStart = true } else { didTouchEnd = true }
     }
 
     var effectiveStart: Date {
-        if target == .draft || didTouchStart || originalStart < dayStart {
-            if !didTouchStart && target != .draft {
-                return originalStart
-            }
-            return dayStart.addingTimeInterval(Double((startHour * 60 + startMinute) * 60))
-        }
-        return originalStart
+        guard target == .draft || didTouchStart else { return originalStart }
+        return dayStart.addingTimeInterval(Double((startHour * 60 + startMinute) * 60))
     }
 
     var effectiveEnd: Date {
@@ -103,6 +115,23 @@ private struct InlineTimeEditorState: Identifiable {
     var focusedMinuteOnDay: Int {
         focus == .start ? displayStartMinuteOnDay : displayEndMinuteOnDay
     }
+
+    var hasPendingMutation: Bool {
+        switch target {
+        case .draft:
+            return true
+        case .existing:
+            if isActiveTarget { return didTouchStart }
+            return hasUnknownOriginalEnd || didTouchStart || didTouchEnd
+        }
+    }
+
+    func isValid(at now: Date) -> Bool {
+        if isActiveTarget {
+            return effectiveStart <= max(originalStart, max(referenceNow, now))
+        }
+        return effectiveEnd > effectiveStart
+    }
 }
 
 private struct TimelineRenderItem: Identifiable {
@@ -114,7 +143,8 @@ private struct TimelineRenderItem: Identifiable {
     let continuesFromPreviousDay: Bool
     let continuesToNextDay: Bool
     let durationSeconds: TimeInterval?
-    let editable: Bool
+    let canEditStart: Bool
+    let canEditEnd: Bool
     let dayKey: String
 }
 
@@ -505,7 +535,7 @@ struct DayDetailSheet: View {
         scale: DayTimelineScale,
         axisHeight: CGFloat
     ) -> some View {
-        let activeMergeIDs = Set(activeMergeCandidateIDs(dayStart: dayStart))
+        let activeMergeIDs = activeMergeCandidateIDs()
         let totalHeight = axisHeight + timelinePadTop + timelinePadBottom
         let activeSelectedID = resolveSelectedID(items: items)
         let hasFocus = activeSelectedID != nil || activeDrag != nil
@@ -754,11 +784,11 @@ struct DayDetailSheet: View {
                 dayStart: dayStart,
                 scale: scale,
                 axisHeight: axisHeight,
-                editable: item.editable
+                editable: item.canEditStart
             )
             .zIndex(6)
 
-            // Bottom Pearl Knob (End)
+            // Bottom end control or live indicator
             timelineKnob(
                 isWarning: item.status == .unknownEnd,
                 isActiveDrag: isDraggingItem && activeDrag?.edge == .end,
@@ -769,7 +799,8 @@ struct DayDetailSheet: View {
                 dayStart: dayStart,
                 scale: scale,
                 axisHeight: axisHeight,
-                editable: item.editable
+                editable: item.canEditEnd,
+                isLiveEnd: item.status == .active
             )
             .zIndex(6)
 
@@ -804,7 +835,7 @@ struct DayDetailSheet: View {
                 )
             }
             .buttonStyle(TimelineTapButtonStyle())
-            .disabled(!item.editable)
+            .disabled(!item.canEditStart)
             .frame(width: 96, alignment: .leading)
             .position(x: labelLeadX + 48, y: startLabelY)
             .zIndex(5)
@@ -862,7 +893,7 @@ struct DayDetailSheet: View {
                 )
             }
             .buttonStyle(TimelineTapButtonStyle())
-            .disabled(!item.editable)
+            .disabled(!item.canEditEnd)
             .frame(width: 96, alignment: .leading)
             .position(x: labelLeadX + 48, y: endLabelY)
             .zIndex(5)
@@ -887,7 +918,7 @@ struct DayDetailSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(TimelineTapButtonStyle())
-            .disabled(!item.editable)
+            .disabled(!item.canEditStart)
             .frame(width: 96, alignment: .leading)
             .position(x: labelLeadX + 48, y: topY)
             .opacity(isDimmed ? 0.24 : 1.0)
@@ -956,7 +987,7 @@ struct DayDetailSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(TimelineTapButtonStyle())
-            .disabled(!item.editable)
+            .disabled(!item.canEditEnd)
             .frame(width: 96, alignment: .leading)
             .position(x: labelLeadX + 48, y: rawBottomY)
             .opacity(isDimmed ? 0.24 : 1.0)
@@ -1033,7 +1064,8 @@ struct DayDetailSheet: View {
         dayStart: Date,
         scale: DayTimelineScale,
         axisHeight: CGFloat,
-        editable: Bool
+        editable: Bool,
+        isLiveEnd: Bool = false
     ) -> some View {
         let knobCapsule = Capsule()
             .fill(
@@ -1063,10 +1095,20 @@ struct DayDetailSheet: View {
             .scaleEffect(isActiveDrag ? 1.12 : 1.0)
             .animation(.spring(response: 0.22, dampingFraction: 0.72), value: isActiveDrag)
 
-        if editable {
+        if isLiveEnd {
+            Circle()
+                .fill(FoamTheme.warmAccent.opacity(0.72))
+                .frame(width: 8, height: 8)
+                .overlay {
+                    Circle().strokeBorder(Color.white.opacity(0.9), lineWidth: 1)
+                }
+                .position(x: unifiedAxisX, y: visualY)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        } else if editable {
             knobCapsule
                 .onTapGesture {
-                    openInlineEditorForKnob(target: target, edge: edge, currentMinute: minute, dayStart: dayStart)
+                    openInlineEditorForKnob(target: target, edge: edge, dayStart: dayStart)
                 }
                 .highPriorityGesture(
                     LongPressGesture(minimumDuration: 0.22)
@@ -1120,7 +1162,7 @@ struct DayDetailSheet: View {
         let bubbleLeftX: CGFloat = 132
         let tailWidth: CGFloat = 10
         let totalBubbleWidth: CGFloat = min(224, max(190, containerSize.width - bubbleLeftX - 4))
-        let bubbleHeight: CGFloat = (editor.target == .draft || editor.hasUnknownOriginalEnd) ? 242 : 210
+        let bubbleHeight: CGFloat = editor.isActiveTarget ? 232 : ((editor.target == .draft || editor.hasUnknownOriginalEnd) ? 242 : 210)
         let totalH = axisHeight + timelinePadTop + timelinePadBottom
 
         // Point the `<` tail directly at the focused timestamp pill's Y
@@ -1163,17 +1205,36 @@ struct DayDetailSheet: View {
         let topY = min(maxTopY, max(minTopY, anchorY - bubbleHeight * 0.5))
         let tailLocalY = min(bubbleHeight - 28, max(28, anchorY - topY))
 
-        let isValid = editor.effectiveEnd > editor.effectiveStart
-        let mergePlan = isValid
-            ? model.previewMerge(
-                editing: editor.target.encounter,
-                startedAt: editor.effectiveStart,
-                endedAt: editor.effectiveEnd
-            )
-            : nil
+        let previewNow = max(editor.referenceNow, Date())
+        let currentLive = editor.target.encounter.flatMap { model.currentResolvedEncounter(for: $0) }
+        let mergePlan = self.mergePlan(for: editor, now: previewNow)
+        let (isValid, invalidMessage): (Bool, String) = {
+            if editor.isActiveTarget {
+                if currentLive == nil {
+                    return (false, "この記録は削除されました")
+                } else if !editor.hasPendingMutation || mergePlan != nil {
+                    return (true, "")
+                } else {
+                    return (false, currentLive?.status == .completed
+                        ? "終了は開始より後にしてね"
+                        : "開始は現在時刻より前にしてね")
+                }
+            } else if editor.target != .draft && currentLive == nil {
+                return (false, "この記録は削除されました")
+            } else {
+                return (editor.effectiveEnd > editor.effectiveStart, "終了は開始より後にしてね")
+            }
+        }()
 
         VStack(spacing: 7) {
-            if editor.target == .draft || editor.hasUnknownOriginalEnd {
+            if editor.isActiveTarget {
+                Text("開始時刻（記録中）")
+                    .font(FoamFont.bold(11, relativeTo: .caption2))
+                    .foregroundStyle(FoamTheme.warmAccent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(FoamTheme.cream.opacity(0.65), in: Capsule())
+            } else if editor.target == .draft || editor.hasUnknownOriginalEnd {
                 HStack(spacing: 4) {
                     focusToggleChip(
                         label: "開始 \(formatMinute(editor.startHour * 60 + editor.startMinute))",
@@ -1207,8 +1268,10 @@ struct DayDetailSheet: View {
                         Picker("時", selection: Binding(
                             get: { inlineEditor?.startHour ?? editor.startHour },
                             set: { newVal in
+                                guard inlineEditor?.startHour != newVal else { return }
                                 inlineEditor?.startHour = newVal
                                 inlineEditor?.didTouchStart = true
+                                inlineEditor?.didChangeWheel = true
                             }
                         )) {
                             ForEach(0..<24, id: \.self) { hr in
@@ -1227,8 +1290,10 @@ struct DayDetailSheet: View {
                         Picker("分", selection: Binding(
                             get: { inlineEditor?.startMinute ?? editor.startMinute },
                             set: { newVal in
+                                guard inlineEditor?.startMinute != newVal else { return }
                                 inlineEditor?.startMinute = newVal
                                 inlineEditor?.didTouchStart = true
+                                inlineEditor?.didChangeWheel = true
                             }
                         )) {
                             ForEach(0..<60, id: \.self) { m in
@@ -1242,11 +1307,13 @@ struct DayDetailSheet: View {
                         Picker("時", selection: Binding(
                             get: { inlineEditor?.endHour ?? editor.endHour },
                             set: { newVal in
+                                guard inlineEditor?.endHour != newVal else { return }
                                 inlineEditor?.endHour = newVal
                                 if newVal == 24 {
                                     inlineEditor?.endMinute = 0
                                 }
                                 inlineEditor?.didTouchEnd = true
+                                inlineEditor?.didChangeWheel = true
                             }
                         )) {
                             ForEach(0...24, id: \.self) { hr in
@@ -1265,8 +1332,10 @@ struct DayDetailSheet: View {
                         Picker("分", selection: Binding(
                             get: { inlineEditor?.endMinute ?? editor.endMinute },
                             set: { newVal in
+                                guard inlineEditor?.endMinute != newVal else { return }
                                 inlineEditor?.endMinute = newVal
                                 inlineEditor?.didTouchEnd = true
+                                inlineEditor?.didChangeWheel = true
                             }
                         )) {
                             ForEach(0..<60, id: \.self) { m in
@@ -1282,11 +1351,13 @@ struct DayDetailSheet: View {
             }
 
             if !isValid {
-                Text("終了は開始より後にしてね")
+                Text(invalidMessage)
                     .font(FoamFont.bold(10.5, relativeTo: .caption2))
                     .foregroundStyle(.red)
             } else if mergePlan?.didMerge == true {
-                Text("隣の記録とくっつきます")
+                Text(mergePlan?.keepsActiveSession == true && currentLive?.status != .active
+                    ? "記録中の時間とくっつきます"
+                    : "隣の記録とくっつきます")
                     .font(FoamFont.bold(10.5, relativeTo: .caption2))
                     .foregroundStyle(FoamTheme.warmAccent)
                     .padding(.horizontal, 8)
@@ -1295,7 +1366,17 @@ struct DayDetailSheet: View {
             }
 
             HStack {
-                if let enc = editor.target.encounter {
+                if editor.target == .draft || editor.isActiveTarget {
+                    Button("キャンセル") {
+                        inlineEditor = nil
+                        if editor.target == .draft {
+                            selectedItemID = nil
+                        }
+                    }
+                    .font(FoamFont.medium(11.5, relativeTo: .caption))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.62))
+                    .buttonStyle(.plain)
+                } else if let enc = editor.target.encounter {
                     Button(role: .destructive) {
                         confirmDeleteTarget = enc
                     } label: {
@@ -1307,14 +1388,6 @@ struct DayDetailSheet: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("削除")
-                } else {
-                    Button("キャンセル") {
-                        inlineEditor = nil
-                        selectedItemID = nil
-                    }
-                    .font(FoamFont.medium(11.5, relativeTo: .caption))
-                    .foregroundStyle(FoamTheme.ink.opacity(0.62))
-                    .buttonStyle(.plain)
                 }
 
                 Spacer()
@@ -1339,7 +1412,7 @@ struct DayDetailSheet: View {
         .padding(.leading, tailWidth + 10)
         .padding(.trailing, 10)
         .padding(.vertical, 10)
-        .frame(width: totalBubbleWidth)
+        .frame(width: totalBubbleWidth, height: editor.isActiveTarget ? bubbleHeight : nil)
         .background {
             SpeechBubbleShape(cornerRadius: 22, tailWidth: tailWidth, tailHeight: 16, tailY: tailLocalY)
                 .fill(Color.white.opacity(0.96))
@@ -1375,10 +1448,10 @@ struct DayDetailSheet: View {
 
     private func buildRenderItems(day: DaySummary, dayStart: Date) -> [TimelineRenderItem] {
         var items: [TimelineRenderItem] = []
+        let liveEndMinute = min(1440, Int(ceil(Date.now.timeIntervalSince(dayStart) / 60.0)))
 
         for slice in day.slices {
             let encounter = model.resolvedEncounters.first { $0.id == slice.encounterID }
-            let editable = slice.status != .active && encounter != nil
             let target = encounter.map { TimelineTarget.existing($0) } ?? .draft
 
             var sMin = max(0, min(1440, Int(floor(slice.sliceStart.timeIntervalSince(dayStart) / 60.0))))
@@ -1388,7 +1461,7 @@ struct DayDetailSheet: View {
             } else if slice.status == .unknownEnd {
                 eMin = min(1440, sMin + 45)
             } else {
-                eMin = max(sMin + 15, min(1440, Int(ceil(Date.now.timeIntervalSince(dayStart) / 60.0))))
+                eMin = liveEndMinute
             }
 
             let isPendingTarget = (activeDrag == nil && inlineEditor == nil && pendingDragAdjustment?.target == target)
@@ -1401,20 +1474,29 @@ struct DayDetailSheet: View {
                 }
             } else if let editor = inlineEditor, editor.target == target {
                 sMin = editor.displayStartMinuteOnDay
-                eMin = editor.displayEndMinuteOnDay
+                if !editor.isActiveTarget {
+                    eMin = editor.displayEndMinuteOnDay
+                }
             } else if isPendingTarget, let pending = pendingDragAdjustment {
                 sMin = max(0, min(1440, Int(floor(pending.proposedStart.timeIntervalSince(dayStart) / 60.0))))
-                eMin = max(sMin, min(1440, Int(ceil(pending.proposedEnd.timeIntervalSince(dayStart) / 60.0))))
+                if let end = pending.proposedEnd {
+                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                }
             }
 
+            if slice.status == .active {
+                eMin = min(1440, max(sMin + 15, liveEndMinute))
+            }
             let status: SessionStatus = (inlineEditor?.target == target && slice.status == .unknownEnd && inlineEditor?.didTouchEnd == true)
                 || (activeDrag?.target == target && activeDrag?.edge == .end)
-                || isPendingTarget
+                || (isPendingTarget && pendingDragAdjustment?.originalStatus != .active)
                 ? .completed
                 : slice.status
 
             let itemDuration: TimeInterval? = isPendingTarget
-                ? pendingDragAdjustment.map { max(0, $0.proposedEnd.timeIntervalSince($0.proposedStart)) }
+                ? pendingDragAdjustment.flatMap { pending in
+                    pending.proposedEnd.map { max(0, $0.timeIntervalSince(pending.proposedStart)) }
+                }
                 : slice.durationSeconds
 
             items.append(
@@ -1427,7 +1509,8 @@ struct DayDetailSheet: View {
                     continuesFromPreviousDay: slice.fullStart < slice.sliceStart,
                     continuesToNextDay: (slice.sliceEnd.flatMap { se in slice.fullEnd.map { $0 > se } }) ?? false,
                     durationSeconds: itemDuration,
-                    editable: editable,
+                    canEditStart: encounter != nil,
+                    canEditEnd: slice.status != .active && encounter != nil,
                     dayKey: slice.dayKey
                 )
             )
@@ -1446,7 +1529,8 @@ struct DayDetailSheet: View {
                     continuesFromPreviousDay: false,
                     continuesToNextDay: false,
                     durationSeconds: TimeInterval(max(0, eMin - sMin) * 60),
-                    editable: true,
+                    canEditStart: true,
+                    canEditEnd: true,
                     dayKey: day.dayKey
                 )
             )
@@ -1668,54 +1752,114 @@ struct DayDetailSheet: View {
         }
         if let editor = inlineEditor {
             extra.append(editor.displayStartMinuteOnDay)
-            extra.append(editor.displayEndMinuteOnDay)
+            if !editor.isActiveTarget {
+                extra.append(editor.displayEndMinuteOnDay)
+            }
         }
         if let pending = pendingDragAdjustment {
             extra.append(max(0, min(1440, Int(floor(pending.proposedStart.timeIntervalSince(dayStart) / 60.0)))))
-            extra.append(max(0, min(1440, Int(ceil(pending.proposedEnd.timeIntervalSince(dayStart) / 60.0)))))
+            if let end = pending.proposedEnd {
+                extra.append(max(0, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0)))))
+            }
         }
         return extra
     }
 
-    private func activeMergeCandidateIDs(dayStart: Date) -> [UUID] {
+    private func activeMergeCandidateIDs() -> Set<UUID> {
+        let plan: EncounterMergePlan?
         if let drag = activeDrag {
-            let sDate = drag.edge == .start
-                ? dayStart.addingTimeInterval(Double(drag.currentMinute * 60))
-                : drag.originalStartDate
-            let eDate = drag.edge == .end
-                ? dayStart.addingTimeInterval(Double(drag.currentMinute * 60))
-                : (drag.originalEndDate ?? dayStart.addingTimeInterval(Double(drag.currentMinute * 60)))
-            if eDate > sDate {
-                return model.previewMerge(editing: drag.target.encounter, startedAt: sDate, endedAt: eDate).absorbed.map(\.id)
-            }
+            plan = mergePlan(for: drag)
+        } else if let editor = inlineEditor {
+            plan = mergePlan(for: editor, now: max(editor.referenceNow, Date()))
+        } else if let pending = pendingDragAdjustment {
+            plan = mergePlan(for: pending, now: Date())
+        } else {
+            plan = nil
         }
-        if let editor = inlineEditor, editor.effectiveEnd > editor.effectiveStart {
+
+        guard let plan, plan.didMerge else { return [] }
+        return Set(plan.absorbed.map(\.id))
+    }
+
+    private func liveActiveStartPreview(
+        for encounter: ResolvedEncounter,
+        proposedStart: Date,
+        now: Date
+    ) -> (plan: EncounterMergePlan, current: ResolvedEncounter)? {
+        guard let current = model.currentResolvedEncounter(for: encounter) else { return nil }
+        switch current.status {
+        case .active:
+            guard proposedStart <= max(current.startedAt, now) else { return nil }
+            return (model.previewMerge(editing: current, startedAt: proposedStart, endedAt: nil, now: now), current)
+        case .completed:
+            guard let end = current.endedAt, end > proposedStart else { return nil }
+            return (model.previewMerge(editing: current, startedAt: proposedStart, endedAt: end, now: now), current)
+        case .unknownEnd:
+            guard proposedStart <= max(current.startedAt, now) else { return nil }
+            return (EncounterMergePlan(target: current, absorbed: [], mergedStart: proposedStart, mergedEnd: nil), current)
+        }
+    }
+
+    private func mergePlan(for drag: ActiveKnobDrag, minute: Int? = nil) -> EncounterMergePlan? {
+        guard let encounter = drag.target.encounter else { return nil }
+        let adjustedDate = drag.dayStart.addingTimeInterval(Double((minute ?? drag.currentMinute) * 60))
+        let start = drag.edge == .start ? adjustedDate : drag.originalStartDate
+        if drag.edge == .start && encounter.status == .active {
+            return liveActiveStartPreview(for: encounter, proposedStart: start, now: drag.referenceNow)?.plan
+        }
+
+        guard let current = model.currentResolvedEncounter(for: encounter) else { return nil }
+        let end = drag.edge == .end ? adjustedDate : (drag.originalEndDate ?? drag.fixedOtherDate)
+        guard end > start else { return nil }
+        return model.previewMerge(editing: current, startedAt: start, endedAt: end, now: drag.referenceNow)
+    }
+
+    private func mergePlan(for editor: InlineTimeEditorState, now: Date) -> EncounterMergePlan? {
+        guard editor.hasPendingMutation else { return nil }
+        if editor.isActiveTarget {
+            guard let enc = editor.target.encounter else { return nil }
+            return liveActiveStartPreview(for: enc, proposedStart: editor.effectiveStart, now: now)?.plan
+        }
+        guard editor.effectiveEnd > editor.effectiveStart else { return nil }
+        if let enc = editor.target.encounter {
+            guard let current = model.currentResolvedEncounter(for: enc) else { return nil }
             return model.previewMerge(
-                editing: editor.target.encounter,
+                editing: current,
                 startedAt: editor.effectiveStart,
-                endedAt: editor.effectiveEnd
-            ).absorbed.map(\.id)
+                endedAt: editor.effectiveEnd,
+                now: now
+            )
         }
-        if let pending = pendingDragAdjustment, pending.proposedEnd > pending.proposedStart {
-            return model.previewMerge(
-                editing: pending.target.encounter,
-                startedAt: pending.proposedStart,
-                endedAt: pending.proposedEnd
-            ).absorbed.map(\.id)
+        return model.previewMerge(
+            editing: nil,
+            startedAt: editor.effectiveStart,
+            endedAt: editor.effectiveEnd,
+            now: now
+        )
+    }
+
+    private func mergePlan(for pending: PendingKnobAdjustment, now: Date) -> EncounterMergePlan? {
+        guard let enc = pending.target.encounter else { return nil }
+        if pending.originalStatus == .active {
+            return liveActiveStartPreview(for: enc, proposedStart: pending.proposedStart, now: now)?.plan
         }
-        return []
+        guard let current = model.currentResolvedEncounter(for: enc),
+              let end = pending.proposedEnd,
+              end > pending.proposedStart else { return nil }
+        return model.previewMerge(
+            editing: current,
+            startedAt: pending.proposedStart,
+            endedAt: end,
+            now: now
+        )
     }
 
     private func dragStatusInfo(for drag: ActiveKnobDrag?) -> (text: String, isMerging: Bool)? {
         guard let drag else { return nil }
-        let sDate = drag.edge == .start
-            ? drag.dayStart.addingTimeInterval(Double(drag.currentMinute * 60))
-            : drag.originalStartDate
-        let eDate = drag.edge == .end
-            ? drag.dayStart.addingTimeInterval(Double(drag.currentMinute * 60))
-            : (drag.originalEndDate ?? drag.dayStart.addingTimeInterval(Double(drag.currentMinute * 60)))
-        let willMerge = eDate > sDate && model.previewMerge(editing: drag.target.encounter, startedAt: sDate, endedAt: eDate).didMerge
-        if willMerge {
+        if let plan = mergePlan(for: drag), plan.didMerge {
+            if plan.keepsActiveSession && plan.target?.status != .active {
+                return ("記録中の時間と重なっています（\(formatMinute(drag.currentMinute))）", true)
+            }
             return ("隣の記録と重なっています（\(formatMinute(drag.currentMinute))）", true)
         }
         return ("\(formatMinute(drag.currentMinute))（1分単位で拡大調整中）", false)
@@ -1723,23 +1867,30 @@ struct DayDetailSheet: View {
 
     @ViewBuilder
     private func pendingAdjustmentBar(pending: PendingKnobAdjustment) -> some View {
+        let now = Date()
         let startMin = max(0, min(1440, Int(floor(pending.proposedStart.timeIntervalSince(pending.dayStart) / 60.0))))
-        let endMin = max(startMin, min(1440, Int(ceil(pending.proposedEnd.timeIntervalSince(pending.dayStart) / 60.0))))
-        let mergePlan = pending.proposedEnd > pending.proposedStart
-            ? model.previewMerge(
-                editing: pending.target.encounter,
-                startedAt: pending.proposedStart,
-                endedAt: pending.proposedEnd
-            )
-            : nil
+        let endMin = pending.proposedEnd.map {
+            max(startMin, min(1440, Int(ceil($0.timeIntervalSince(pending.dayStart) / 60.0))))
+        }
+        let current = pending.target.encounter.flatMap { model.currentResolvedEncounter(for: $0) }
+        let mergePlan = self.mergePlan(for: pending, now: now)
+        let staysActive = (current?.status == .active) || (mergePlan?.keepsActiveSession == true)
+        let endLabel = staysActive ? "記録中" : formatMinute(endMin ?? startMin)
+        let canCommit = mergePlan != nil
 
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(formatMinute(startMin)) 〜 \(formatMinute(endMin))")
+                Text("\(formatMinute(startMin)) 〜 \(endLabel)")
                     .font(FoamFont.bold(13.5, relativeTo: .subheadline))
                     .foregroundStyle(FoamTheme.ink)
-                if mergePlan?.didMerge == true {
-                    Text("隣の記録とくっつきます")
+                if !canCommit {
+                    Text(current == nil ? "この記録は削除されました" : "終了時刻より前に調整してください")
+                        .font(FoamFont.bold(10.5, relativeTo: .caption2))
+                        .foregroundStyle(.red)
+                } else if mergePlan?.didMerge == true {
+                    Text(mergePlan?.keepsActiveSession == true && current?.status != .active
+                        ? "記録中の時間とくっつきます"
+                        : "隣の記録とくっつきます")
                         .font(FoamFont.bold(10.5, relativeTo: .caption2))
                         .foregroundStyle(FoamTheme.warmAccent)
                 }
@@ -1767,9 +1918,10 @@ struct DayDetailSheet: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
-                    .background(FoamTheme.ink, in: Capsule())
+                    .background(canCommit ? FoamTheme.ink : FoamTheme.ink.opacity(0.28), in: Capsule())
             }
             .buttonStyle(.plain)
+            .disabled(!canCommit)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -1785,19 +1937,36 @@ struct DayDetailSheet: View {
 
     private func commitPendingDragAdjustment() {
         guard let pending = pendingDragAdjustment,
-              let enc = pending.target.encounter,
-              pending.proposedEnd > pending.proposedStart else {
+              let enc = pending.target.encounter else { return }
+        let now = Date()
+        guard let plan = mergePlan(for: pending, now: now) else {
+            if model.currentResolvedEncounter(for: enc) == nil {
+                pendingDragAdjustment = nil
+                selectedItemID = nil
+            }
             return
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        if pending.originalStatus == .unknownEnd {
-            model.completeUnknownEnd(enc, startedAt: pending.proposedStart, endedAt: pending.proposedEnd)
+        if pending.originalStatus == .active {
+            model.updateActiveEncounterStart(enc, startedAt: pending.proposedStart, now: now)
         } else {
-            model.updateResolvedEncounter(enc, startedAt: pending.proposedStart, endedAt: pending.proposedEnd)
+            guard let end = pending.proposedEnd, end > pending.proposedStart else { return }
+            if pending.originalStatus == .unknownEnd {
+                model.completeUnknownEnd(enc, startedAt: pending.proposedStart, endedAt: end, now: now)
+            } else {
+                model.updateResolvedEncounter(enc, startedAt: pending.proposedStart, endedAt: end, now: now)
+            }
         }
         if model.journalError == nil {
             withAnimation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.84)) {
                 pendingDragAdjustment = nil
+                let dayKey = EncounterCalendarAggregator.dayKey(for: pending.dayStart)
+                if let surviving = plan.survivingActiveEncounter,
+                   let postCommit = model.currentResolvedEncounter(for: surviving) {
+                    selectedItemID = "\(postCommit.id.uuidString)_\(dayKey)"
+                } else if let postCommit = model.currentResolvedEncounter(for: enc) {
+                    selectedItemID = "\(postCommit.id.uuidString)_\(dayKey)"
+                }
             }
         }
     }
@@ -1819,7 +1988,9 @@ struct DayDetailSheet: View {
         frozenScale: DayTimelineScale,
         fingerY: CGFloat?
     ) {
-        guard let enc = target.encounter, enc.status != .active else { return }
+        guard let enc = target.encounter, !(enc.status == .active && edge == .end) else { return }
+        let dragNow = Date()
+        let isActive = enc.status == .active
         inlineEditor = nil
         isMemoFocused = false
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -1828,7 +1999,7 @@ struct DayDetailSheet: View {
         let currentEnd: Date?
         if let pending = pendingDragAdjustment, pending.target == target {
             currentStart = pending.proposedStart
-            currentEnd = pending.proposedEnd
+            currentEnd = pending.proposedEnd ?? enc.endedAt
         } else {
             pendingDragAdjustment = nil
             currentStart = enc.startedAt
@@ -1836,20 +2007,23 @@ struct DayDetailSheet: View {
         }
 
         let fixedOtherDate: Date
-        if edge == .start {
+        if isActive {
+            fixedOtherDate = max(currentStart, dragNow)
+        } else if edge == .start {
             fixedOtherDate = currentEnd ?? currentStart.addingTimeInterval(1800)
         } else {
             fixedOtherDate = currentStart
         }
 
-        let initialClamped = max(0, min(1440, initialMinute))
+        let initialClamped = max(0, min(isActive ? 1439 : 1440, initialMinute))
         activeDrag = ActiveKnobDrag(
             target: target,
             edge: edge,
             dayStart: dayStart,
+            referenceNow: dragNow,
             fixedOtherDate: fixedOtherDate,
             originalStartDate: currentStart,
-            originalEndDate: currentEnd,
+            originalEndDate: isActive ? nil : currentEnd,
             frozenScale: frozenScale,
             initialMinute: initialClamped,
             currentMinute: initialClamped,
@@ -1876,7 +2050,11 @@ struct DayDetailSheet: View {
         let deltaMinutes = Int(round(Double(fingerY - startY) / ptsPerMin))
         var nextMinute = max(0, min(1440, drag.initialMinute + deltaMinutes))
 
-        if drag.edge == .start {
+        if drag.target.encounter?.status == .active {
+            let limit = max(drag.originalStartDate, drag.referenceNow)
+            let limitMinute = Int(floor(limit.timeIntervalSince(drag.dayStart) / 60.0))
+            nextMinute = min(nextMinute, max(0, min(1439, limitMinute)))
+        } else if drag.edge == .start {
             let maxAllowedStartDate = drag.fixedOtherDate.addingTimeInterval(-60)
             let maxStartMin = Int(floor(maxAllowedStartDate.timeIntervalSince(drag.dayStart) / 60.0))
             nextMinute = min(nextMinute, max(0, maxStartMin))
@@ -1887,93 +2065,113 @@ struct DayDetailSheet: View {
         }
 
         if nextMinute != drag.currentMinute {
-            drag.currentMinute = nextMinute
-            let sDate = drag.edge == .start
-                ? drag.dayStart.addingTimeInterval(Double(nextMinute * 60))
-                : drag.originalStartDate
-            let eDate = drag.edge == .end
-                ? drag.dayStart.addingTimeInterval(Double(nextMinute * 60))
-                : (drag.originalEndDate ?? drag.dayStart.addingTimeInterval(Double(nextMinute * 60)))
-
-            if eDate > sDate {
-                let willMerge = model.previewMerge(editing: drag.target.encounter, startedAt: sDate, endedAt: eDate).didMerge
-                if willMerge && !drag.didTriggerMergeHaptic {
-                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-                }
-                drag.didTriggerMergeHaptic = willMerge
+            let willMerge = mergePlan(for: drag, minute: nextMinute)?.didMerge == true
+            if willMerge && !drag.didTriggerMergeHaptic {
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             }
+            drag.currentMinute = nextMinute
+            drag.didTriggerMergeHaptic = willMerge
             activeDrag = drag
         }
     }
 
     private func finishKnobDrag() {
         guard let drag = activeDrag else { return }
-        let adjustedDate = drag.dayStart.addingTimeInterval(Double(drag.currentMinute * 60))
-
-        if let enc = drag.target.encounter {
-            let finalStart = drag.edge == .start ? adjustedDate : drag.originalStartDate
-            let finalEnd = drag.edge == .end ? adjustedDate : (drag.originalEndDate ?? drag.originalStartDate.addingTimeInterval(1800))
-            if finalEnd > finalStart {
-                let itemID = "\(enc.id.uuidString)_\(EncounterCalendarAggregator.dayKey(for: drag.dayStart))"
-                if var existing = pendingDragAdjustment, existing.target == drag.target {
-                    existing.proposedStart = finalStart
-                    existing.proposedEnd = finalEnd
-                    if existing.originalStatus == .completed,
-                       existing.proposedStart == existing.originalStart,
-                       existing.proposedEnd == existing.originalEnd {
-                        pendingDragAdjustment = nil
-                    } else {
-                        pendingDragAdjustment = existing
-                        selectedItemID = existing.itemID
-                    }
-                } else if finalStart != enc.startedAt || finalEnd != enc.endedAt || enc.status == .unknownEnd {
-                    pendingDragAdjustment = PendingKnobAdjustment(
-                        target: drag.target,
-                        itemID: itemID,
-                        dayStart: drag.dayStart,
-                        originalStart: enc.startedAt,
-                        originalEnd: enc.endedAt,
-                        originalStatus: enc.status,
-                        proposedStart: finalStart,
-                        proposedEnd: finalEnd
-                    )
-                    selectedItemID = itemID
-                }
+        defer {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            withAnimation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.84)) {
+                zoomFactor = 1.0
+                activeDrag = nil
             }
         }
 
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        withAnimation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.84)) {
-            zoomFactor = 1.0
-            activeDrag = nil
+        guard let enc = drag.target.encounter else { return }
+        let matchingPending = pendingDragAdjustment?.target == drag.target ? pendingDragAdjustment : nil
+        if drag.currentMinute == drag.initialMinute && matchingPending == nil && enc.status != .unknownEnd {
+            return
+        }
+
+        let adjustedDate = drag.dayStart.addingTimeInterval(Double(drag.currentMinute * 60))
+        let finalStart = drag.edge == .start ? adjustedDate : drag.originalStartDate
+        let finalEnd: Date?
+        if enc.status == .active {
+            guard adjustedDate <= max(enc.startedAt, drag.referenceNow) else { return }
+            finalEnd = nil
+        } else {
+            let end = drag.edge == .end ? adjustedDate : (drag.originalEndDate ?? drag.fixedOtherDate)
+            guard end > finalStart else { return }
+            finalEnd = end
+        }
+
+        let itemID = "\(enc.id.uuidString)_\(EncounterCalendarAggregator.dayKey(for: drag.dayStart))"
+        var pending = matchingPending.flatMap { $0.originalStatus == enc.status ? $0 : nil } ?? PendingKnobAdjustment(
+            target: drag.target,
+            itemID: itemID,
+            dayStart: drag.dayStart,
+            originalStart: enc.startedAt,
+            originalEnd: enc.endedAt,
+            originalStatus: enc.status,
+            proposedStart: finalStart,
+            proposedEnd: finalEnd
+        )
+        pending.proposedStart = finalStart
+        pending.proposedEnd = finalEnd
+        if pending.originalStatus != .unknownEnd,
+           pending.proposedStart == pending.originalStart,
+           pending.proposedEnd == pending.originalEnd {
+            pendingDragAdjustment = nil
+        } else {
+            pendingDragAdjustment = pending
+            selectedItemID = itemID
         }
     }
 
     // MARK: - Inline Speech-Bubble Wheel Helpers
 
     private func openInlineEditor(for item: TimelineRenderItem, focus: TimelineKnobEdge, dayStart: Date) {
-        guard item.editable else { return }
+        guard focus == .start ? item.canEditStart : item.canEditEnd else { return }
         isMemoFocused = false
         selectedItemID = item.id
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        openInlineEditor(target: item.target, focus: focus, dayStart: dayStart, item: item)
+    }
 
-        if item.target == .draft {
+    private func openInlineEditorForKnob(target: TimelineTarget, edge: TimelineKnobEdge, dayStart: Date) {
+        guard !(target.encounter?.status == .active && edge == .end) else { return }
+        openInlineEditor(target: target, focus: edge, dayStart: dayStart)
+    }
+
+    private func openInlineEditor(
+        target: TimelineTarget,
+        focus: TimelineKnobEdge,
+        dayStart: Date,
+        item: TimelineRenderItem? = nil
+    ) {
+        if target == .draft {
             inlineEditor?.setFocus(focus)
             return
         }
-        guard let enc = item.target.encounter else { return }
-        let matchingPending = pendingDragAdjustment?.target == item.target ? pendingDragAdjustment : nil
+        guard let enc = target.encounter else { return }
+        let isActive = enc.status == .active
+        let matchingPending = pendingDragAdjustment?.target == target ? pendingDragAdjustment : nil
         pendingDragAdjustment = nil
 
         let baseStart = matchingPending?.proposedStart ?? enc.startedAt
-        let baseEnd = matchingPending?.proposedEnd ?? enc.endedAt
-        let sMin = matchingPending.map {
-            max(0, min(1440, Int(floor($0.proposedStart.timeIntervalSince(dayStart) / 60.0))))
-        } ?? item.sliceStartMinute
-        let eMin = matchingPending.map {
-            max(sMin, min(1440, Int(ceil($0.proposedEnd.timeIntervalSince(dayStart) / 60.0))))
-        } ?? (enc.status == .unknownEnd ? min(1440, sMin + 60) : item.sliceEndMinute)
-        let resolvedFocus: TimelineKnobEdge = (enc.status == .unknownEnd && matchingPending == nil) ? .end : focus
+        let baseEnd = isActive ? nil : (matchingPending?.proposedEnd ?? enc.endedAt)
+        let originalStartMinute = Int(floor(baseStart.timeIntervalSince(dayStart) / 60.0))
+        let shownStartMinute = matchingPending == nil ? (item?.sliceStartMinute ?? originalStartMinute) : originalStartMinute
+        let sMin = max(0, min(isActive ? 1439 : 1440, shownStartMinute))
+        let eMin: Int
+        if isActive {
+            eMin = sMin
+        } else if matchingPending == nil, let item, enc.status != .unknownEnd {
+            eMin = item.sliceEndMinute
+        } else {
+            eMin = baseEnd.map { max(sMin, min(1440, Int(ceil($0.timeIntervalSince(dayStart) / 60.0)))) }
+                ?? min(1440, sMin + 60)
+        }
+        let hasUnknownOriginalEnd = enc.status == .unknownEnd && matchingPending == nil
+        let resolvedFocus: TimelineKnobEdge = isActive ? .start : (hasUnknownOriginalEnd ? .end : focus)
 
         withAnimation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.82)) {
             inlineEditor = InlineTimeEditorState(
@@ -1982,52 +2180,16 @@ struct DayDetailSheet: View {
                 dayStart: dayStart,
                 originalStart: baseStart,
                 originalEnd: baseEnd,
-                hasUnknownOriginalEnd: enc.status == .unknownEnd && matchingPending == nil,
+                hasUnknownOriginalEnd: hasUnknownOriginalEnd,
+                isActiveTarget: isActive,
+                referenceNow: Date(),
                 startHour: min(23, sMin / 60),
                 startMinute: sMin % 60,
                 endHour: min(24, eMin / 60),
                 endMinute: eMin >= 1440 ? 0 : (eMin % 60),
-                didTouchStart: (matchingPending.map { $0.proposedStart != $0.originalStart } ?? false) || resolvedFocus == .start,
-                didTouchEnd: (matchingPending.map { $0.proposedEnd != $0.originalEnd } ?? false) || resolvedFocus == .end || enc.status == .unknownEnd
-            )
-        }
-    }
-
-    private func openInlineEditorForKnob(
-        target: TimelineTarget,
-        edge: TimelineKnobEdge,
-        currentMinute: Int,
-        dayStart: Date
-    ) {
-        if target == .draft {
-            inlineEditor?.setFocus(edge)
-            return
-        }
-        guard let enc = target.encounter, enc.status != .active else { return }
-        let _ = currentMinute
-        let matchingPending = pendingDragAdjustment?.target == target ? pendingDragAdjustment : nil
-        pendingDragAdjustment = nil
-
-        let baseStart = matchingPending?.proposedStart ?? enc.startedAt
-        let baseEnd = matchingPending?.proposedEnd ?? enc.endedAt
-        let sMin = max(0, min(1440, Int(floor(baseStart.timeIntervalSince(dayStart) / 60.0))))
-        let eMin = baseEnd.map { max(sMin, min(1440, Int(ceil($0.timeIntervalSince(dayStart) / 60.0)))) }
-            ?? min(1440, sMin + 60)
-        let resolvedEdge: TimelineKnobEdge = (enc.status == .unknownEnd && matchingPending == nil) ? .end : edge
-        withAnimation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.82)) {
-            inlineEditor = InlineTimeEditorState(
-                target: .existing(enc),
-                focus: resolvedEdge,
-                dayStart: dayStart,
-                originalStart: baseStart,
-                originalEnd: baseEnd,
-                hasUnknownOriginalEnd: enc.status == .unknownEnd && matchingPending == nil,
-                startHour: min(23, sMin / 60),
-                startMinute: sMin % 60,
-                endHour: min(24, eMin / 60),
-                endMinute: eMin >= 1440 ? 0 : (eMin % 60),
-                didTouchStart: (matchingPending.map { $0.proposedStart != $0.originalStart } ?? false) || resolvedEdge == .start,
-                didTouchEnd: (matchingPending.map { $0.proposedEnd != $0.originalEnd } ?? false) || resolvedEdge == .end || enc.status == .unknownEnd
+                didTouchStart: matchingPending.map { $0.proposedStart != $0.originalStart } ?? false,
+                didTouchEnd: !isActive && (enc.status == .unknownEnd
+                    || (matchingPending.map { $0.proposedEnd != $0.originalEnd } ?? false))
             )
         }
     }
@@ -2059,6 +2221,8 @@ struct DayDetailSheet: View {
                 originalStart: dayStart.addingTimeInterval(Double(defaultStartMin * 60)),
                 originalEnd: dayStart.addingTimeInterval(Double(defaultEndMin * 60)),
                 hasUnknownOriginalEnd: false,
+                isActiveTarget: false,
+                referenceNow: Date(),
                 startHour: defaultStartMin / 60,
                 startMinute: defaultStartMin % 60,
                 endHour: defaultEndMin / 60,
@@ -2078,7 +2242,14 @@ struct DayDetailSheet: View {
             }
             return
         }
-        if editor.effectiveEnd > editor.effectiveStart && !editor.hasUnknownOriginalEnd {
+        let now = Date()
+        let previewNow = editor.isActiveTarget ? max(editor.referenceNow, now) : now
+        let plan = mergePlan(for: editor, now: previewNow)
+        let shouldCommit = !editor.hasUnknownOriginalEnd
+            && (editor.didTouchStart || editor.didTouchEnd)
+            && plan != nil
+            && plan?.didMerge != true
+        if shouldCommit {
             commitInlineEditor()
         } else {
             withAnimation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.85)) {
@@ -2089,26 +2260,56 @@ struct DayDetailSheet: View {
 
     private func commitInlineEditor() {
         guard let editor = inlineEditor else { return }
-        let finalStart = editor.effectiveStart
-        let finalEnd = editor.effectiveEnd
-        guard finalEnd > finalStart else { return }
+        guard editor.hasPendingMutation else {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.85)) {
+                inlineEditor = nil
+            }
+            return
+        }
+        let now = Date()
+        let previewNow = editor.isActiveTarget ? max(editor.referenceNow, now) : now
+        guard let plan = mergePlan(for: editor, now: previewNow) else {
+            if let enc = editor.target.encounter, model.currentResolvedEncounter(for: enc) == nil {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.85)) {
+                    inlineEditor = nil
+                    selectedItemID = nil
+                }
+            }
+            return
+        }
 
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        switch editor.target {
-        case .draft:
-            model.addManualEncounter(startedAt: finalStart, endedAt: finalEnd)
-        case let .existing(enc):
-            if enc.status == .unknownEnd {
-                model.completeUnknownEnd(enc, startedAt: finalStart, endedAt: finalEnd)
-            } else {
-                model.updateResolvedEncounter(enc, startedAt: finalStart, endedAt: finalEnd)
+        let finalStart = editor.effectiveStart
+        if editor.isActiveTarget {
+            guard case let .existing(enc) = editor.target else { return }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            model.updateActiveEncounterStart(enc, startedAt: finalStart, now: previewNow)
+        } else {
+            let finalEnd = editor.effectiveEnd
+            guard finalEnd > finalStart else { return }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            switch editor.target {
+            case .draft:
+                model.addManualEncounter(startedAt: finalStart, endedAt: finalEnd, now: now)
+            case let .existing(enc):
+                if enc.status == .unknownEnd {
+                    model.completeUnknownEnd(enc, startedAt: finalStart, endedAt: finalEnd, now: now)
+                } else {
+                    model.updateResolvedEncounter(enc, startedAt: finalStart, endedAt: finalEnd, now: now)
+                }
             }
         }
 
         if model.journalError == nil {
             withAnimation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.85)) {
                 inlineEditor = nil
-                if editor.target == .draft {
+                let dayKey = EncounterCalendarAggregator.dayKey(for: editor.dayStart)
+                if let surviving = plan.survivingActiveEncounter,
+                   let postCommit = model.currentResolvedEncounter(for: surviving) {
+                    selectedItemID = "\(postCommit.id.uuidString)_\(dayKey)"
+                } else if let enc = editor.target.encounter,
+                          let postCommit = model.currentResolvedEncounter(for: enc) {
+                    selectedItemID = "\(postCommit.id.uuidString)_\(dayKey)"
+                } else if editor.target == .draft {
                     selectedItemID = nil
                 }
             }

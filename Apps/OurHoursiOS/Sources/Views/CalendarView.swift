@@ -40,50 +40,80 @@ struct CalendarView: View {
         let summaries = model.daySummaries(forMonth: currentFirst)
         let pageStride = gridWidth + pageSpacing
 
+        let isCurrentMonth = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month)
+
+        let monthCluster = HStack(spacing: 10) {
+            monthButton(-1)
+            Text(currentFirst.formatted(.dateTime.year().month().locale(Locale(identifier: "ja_JP"))))
+                .font(FoamFont.bold(24, relativeTo: .title))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .id("title-\(year)-\(month)")
+            monthButton(1)
+        }
+
+        let todayButton = Button {
+            guard !isAnimatingCommit else { return }
+            jumpToCurrentMonth(from: currentFirst)
+        } label: {
+            Text("今日")
+                .font(FoamFont.bold(13, relativeTo: .caption))
+                .foregroundStyle(FoamTheme.ink)
+                .padding(.horizontal, 11)
+                .frame(height: 34)
+                .background {
+                    SoapBubbleSurface(
+                        cornerStyle: .capsule,
+                        prominence: .standard,
+                        isTogether: model.isTogetherNow,
+                        seed: 3.1,
+                        wobbleScale: 0.75
+                    )
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(CalendarBounceButtonStyle())
+        .accessibilityLabel("今月に戻る")
+        .fixedSize()
+        .transition(.scale(scale: 0.82).combined(with: .opacity))
+
         ScrollView {
             VStack(spacing: 16) {
-                HStack(spacing: 14) {
-                    monthButton(-1)
-                    Text(currentFirst.formatted(.dateTime.year().month().locale(Locale(identifier: "ja_JP"))))
-                        .font(FoamFont.bold(24, relativeTo: .title))
-                        .id("title-\(year)-\(month)")
-                    monthButton(1)
+                Group {
+                    if isCurrentMonth {
+                        monthCluster
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) {
+                                todayButton
+                                    .hidden()
+                                    .accessibilityHidden(true)
+                                Spacer(minLength: 0)
+                                monthCluster
+                                Spacer(minLength: 0)
+                                todayButton
+                            }
+                            HStack(spacing: 8) {
+                                Spacer(minLength: 0)
+                                monthCluster
+                                Spacer(minLength: 4)
+                                todayButton
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
                 }
+                .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+                .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: isCurrentMonth)
 
-                let isCurrentMonth = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month)
-                HStack(spacing: 12) {
+                HStack(spacing: 16) {
                     let seconds = summaries.values.reduce(0) { $0 + $1.totalRecordedSeconds }
                     let days = summaries.values.count { !$0.slices.isEmpty }
                     Text("\(isCurrentMonth ? "今月" : "月合計") \(FoamTheme.duration(seconds)) · \(days)日")
                         .font(FoamFont.bold(15, relativeTo: .subheadline))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
                         .foamCloudSurface(isTogether: model.isTogetherNow, compact: true)
-
-                    if !isCurrentMonth {
-                        Button {
-                            guard !isAnimatingCommit else { return }
-                            jumpToCurrentMonth(from: currentFirst)
-                        } label: {
-                            Text("今日")
-                                .font(FoamFont.bold(14, relativeTo: .subheadline))
-                                .foregroundStyle(FoamTheme.ink)
-                                .padding(.horizontal, 14)
-                                .frame(height: 44)
-                                .background {
-                                    SoapBubbleSurface(
-                                        cornerStyle: .capsule,
-                                        prominence: .standard,
-                                        isTogether: model.isTogetherNow,
-                                        seed: 3.1,
-                                        wobbleScale: 0.75
-                                    )
-                                }
-                        }
-                        .buttonStyle(CalendarBounceButtonStyle())
-                        .accessibilityLabel("今月に戻る")
-                        .transition(.scale(scale: 0.82).combined(with: .opacity))
-                    }
 
                     Button {
                         let targetDate = isCurrentMonth ? .now : currentFirst
@@ -102,7 +132,6 @@ struct CalendarView: View {
                     .buttonStyle(CalendarBounceButtonStyle())
                     .accessibilityLabel("記録を追加")
                 }
-                .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: isCurrentMonth)
 
                 ZStack(alignment: .top) {
                     CalendarMonthPageView(
