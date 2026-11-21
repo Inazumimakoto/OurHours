@@ -17,10 +17,10 @@ struct JournalStoreTests {
         #expect(original.birthday == day)
         #expect(original.bubbleColor == .mint)
         try store.setRoleProfile(role: .partnerB, bubbleColor: .lavender, birthday: nil)
-        let edited = try store.setRoleProfile(role: .partnerA, bubbleColor: .coral, birthday: nil)
+        let edited = try store.setRoleProfile(role: .partnerA, bubbleColor: .clear, birthday: nil)
         let profile = try #require(edited.profile(for: .partnerA))
         #expect(profile.updatedAt > original.updatedAt)
-        #expect(profile.bubbleColor == .coral && profile.birthday == nil)
+        #expect(profile.bubbleColor == .clear && profile.bubbleColor.displayName == "透明" && profile.birthday == nil)
         #expect(edited.profile(for: .partnerB)?.bubbleColor == .lavender)
 
         let saved = try #require(try store.setAnniversary(day).anniversary)

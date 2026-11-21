@@ -4,6 +4,7 @@ import SwiftUI
 extension BubbleColorTheme {
     var tintColor: Color {
         switch self {
+        case .clear: Color.white.opacity(0.45)
         case .skyBlue: Color(red: 0.59, green: 0.82, blue: 0.99)
         case .sakuraPink: Color(red: 1.00, green: 0.72, blue: 0.83)
         case .lavender: Color(red: 0.78, green: 0.71, blue: 0.98)
@@ -15,6 +16,7 @@ extension BubbleColorTheme {
 
     var deepTintColor: Color {
         switch self {
+        case .clear: Color(red: 0.80, green: 0.86, blue: 0.96)
         case .skyBlue: Color(red: 0.33, green: 0.61, blue: 0.87)
         case .sakuraPink: Color(red: 0.86, green: 0.45, blue: 0.64)
         case .lavender: Color(red: 0.62, green: 0.48, blue: 0.84)
@@ -26,6 +28,7 @@ extension BubbleColorTheme {
 
     var glowColor: Color {
         switch self {
+        case .clear: Color.white.opacity(0.95)
         case .skyBlue: Color(red: 0.87, green: 0.98, blue: 1.00)
         case .sakuraPink: Color(red: 1.00, green: 0.91, blue: 0.96)
         case .lavender: Color(red: 0.94, green: 0.90, blue: 1.00)
@@ -36,7 +39,14 @@ extension BubbleColorTheme {
     }
 
     var swatchGradient: LinearGradient {
-        LinearGradient(
+        if self == .clear {
+            return LinearGradient(
+                colors: [Color.white.opacity(0.72), Color.white.opacity(0.16)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        return LinearGradient(
             colors: [glowColor, tintColor, deepTintColor.opacity(0.84)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -53,7 +63,7 @@ struct BubbleColorSwatches: View {
         ViewThatFits(in: .horizontal) {
             swatchRow(colors)
             VStack(spacing: 2) {
-                swatchRow(Array(colors.prefix(3)))
+                swatchRow(Array(colors.prefix(4)))
                 swatchRow(Array(colors.suffix(3)))
             }
         }
@@ -68,7 +78,33 @@ struct BubbleColorSwatches: View {
                 } label: {
                     Circle()
                         .fill(color.swatchGradient)
-                        .overlay { Circle().strokeBorder(.white.opacity(0.88), lineWidth: 1.5) }
+                        .overlay {
+                            if color == .clear {
+                                Circle().strokeBorder(
+                                    AngularGradient(
+                                        colors: [
+                                            Color(red: 0.72, green: 0.88, blue: 1.0),
+                                            Color(red: 1.0, green: 0.80, blue: 0.90),
+                                            Color(red: 0.84, green: 0.97, blue: 0.90),
+                                            Color.white,
+                                            Color(red: 0.72, green: 0.88, blue: 1.0)
+                                        ],
+                                        center: .center
+                                    ),
+                                    lineWidth: 2
+                                )
+                            } else {
+                                Circle().strokeBorder(.white.opacity(0.88), lineWidth: 1.5)
+                            }
+                        }
+                        .overlay(alignment: .topLeading) {
+                            if color == .clear {
+                                Circle()
+                                    .fill(.white.opacity(0.95))
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: 7, y: 7)
+                            }
+                        }
                         .overlay {
                             if selection == color {
                                 Image(systemName: "checkmark")

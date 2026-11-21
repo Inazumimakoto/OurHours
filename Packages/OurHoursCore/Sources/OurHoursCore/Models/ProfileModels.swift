@@ -1,6 +1,7 @@
 import Foundation
 
 public enum BubbleColorTheme: String, Codable, Sendable, Equatable, Hashable, CaseIterable, Identifiable {
+    case clear
     case skyBlue
     case sakuraPink
     case lavender
@@ -12,6 +13,7 @@ public enum BubbleColorTheme: String, Codable, Sendable, Equatable, Hashable, Ca
 
     public var displayName: String {
         switch self {
+        case .clear: "透明"
         case .skyBlue: "みずいろ"
         case .sakuraPink: "さくらピンク"
         case .lavender: "ラベンダー"

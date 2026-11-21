@@ -335,11 +335,6 @@ private struct PairingCompletionForm: View {
                         }
                     }
                 }
-            } else {
-                FoamSoftCard {
-                    Text("記念日は招待した側が設定すると自動で同期されます（あとから設定でも変更できます）")
-                        .font(FoamFont.regular(14, relativeTo: .footnote))
-                }
             }
 
             Button(actionTitle) {

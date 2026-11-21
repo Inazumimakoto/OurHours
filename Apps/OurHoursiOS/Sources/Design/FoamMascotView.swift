@@ -82,7 +82,7 @@ struct MascotBubbleAvatar: View {
             let blink = floats && (time + Double(index)).truncatingRemainder(dividingBy: 4.7) < 0.13
 
             ZStack {
-                if let color {
+                if let color, color != .clear {
                     Circle()
                         .fill(RadialGradient(
                             colors: [color.glowColor.opacity(0.16), color.tintColor.opacity(0.50), color.deepTintColor.opacity(0.34)],

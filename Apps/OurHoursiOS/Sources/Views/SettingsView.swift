@@ -11,8 +11,6 @@ struct SettingsView: View {
     @State private var showPairing = false
     @State private var confirmUnpair = false
     @State private var confirmClear = false
-    @State private var nicknameDraft = ""
-    @FocusState private var editingNickname: Bool
 
     private var appVersionLabel: String {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -61,7 +59,6 @@ struct SettingsView: View {
                     .padding(.top, 6)
                     .padding(.bottom, 34)
                 }
-                .scrollDismissesKeyboard(.interactively)
             }
         }
         .font(FoamFont.medium(16))
@@ -69,6 +66,14 @@ struct SettingsView: View {
         .preferredColorScheme(.light)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showPairing) { PairingView() }
+    }
+
+    private var pairingStatusLabel: String {
+        let name = model.partnerNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            return model.isTogetherNow ? "いま一緒にいるよ" : "ペア連携中"
+        }
+        return model.isTogetherNow ? "\(name)と今一緒にいるよ" : "\(name)とペア連携中"
     }
 
     private var releaseProfileSection: some View {
@@ -80,31 +85,10 @@ struct SettingsView: View {
 
                 Divider()
                 OptionalProfileDateRow(
-                    title: "誕生日",
+                    title: "自分の誕生日",
+                    showsTodayButton: false,
                     date: Binding(get: { model.localBirthday }, set: { model.setLocalBirthday($0) })
                 )
-
-                Divider()
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("相手の呼び方（任意）")
-                        .font(FoamFont.bold(15, relativeTo: .subheadline))
-                    TextField("相手の呼び方（任意）", text: $nicknameDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($editingNickname)
-                        .onAppear { nicknameDraft = model.partnerNickname }
-                        .onChange(of: nicknameDraft) {
-                            if editingNickname { model.setPartnerNickname(nicknameDraft) }
-                        }
-                        .onChange(of: model.partnerNickname) {
-                            if !editingNickname { nicknameDraft = model.partnerNickname }
-                        }
-                        .onChange(of: editingNickname) {
-                            if !editingNickname {
-                                model.setPartnerNickname(nicknameDraft)
-                                nicknameDraft = model.partnerNickname
-                            }
-                        }
-                }
 
                 Divider()
                 OptionalProfileDateRow(
@@ -142,7 +126,7 @@ struct SettingsView: View {
             if let pair = model.snapshot.pairConfiguration {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .center, spacing: 10) {
-                        Text(model.isTogetherNow ? "いま一緒にいるよ" : "ペア連携中")
+                        Text(pairingStatusLabel)
                             .font(FoamFont.bold(12.5, relativeTo: .caption))
                             .foregroundStyle(model.isTogetherNow ? FoamTheme.warmAccent : FoamTheme.ink)
                             .padding(.horizontal, 11)
@@ -160,6 +144,29 @@ struct SettingsView: View {
                     Text("\(pair.createdAt.formatted(date: .long, time: .omitted)) から記録中")
                         .font(FoamFont.regular(12.5, relativeTo: .caption))
                         .foregroundStyle(FoamTheme.ink.opacity(0.64))
+
+                    Divider().overlay(FoamTheme.ink.opacity(0.08))
+
+                    NavigationLink {
+                        PartnerNicknameEditView()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("相手の呼び方")
+                                .font(FoamFont.bold(15, relativeTo: .subheadline))
+                                .foregroundStyle(FoamTheme.ink)
+                            Spacer(minLength: 8)
+                            Text(model.partnerNickname.isEmpty ? "未設定" : model.partnerNickname)
+                                .font(FoamFont.regular(14, relativeTo: .subheadline))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.68))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.45))
+                        }
+                        .frame(minHeight: 40)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
 
                     if pair.localRole == .partnerA {
                         Button("招待QRコードを表示") { showPairing = true }
@@ -513,10 +520,98 @@ struct SettingsView: View {
     }
 }
 
+private struct PartnerNicknameEditView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var nicknameDraft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        ZStack {
+            FoamTheme.sky(together: model.isTogetherNow)
+                .ignoresSafeArea()
+            FoamAmbientBackgroundView(isTogether: model.isTogetherNow, softened: true)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                ZStack {
+                    Text("相手の呼び方")
+                        .font(FoamFont.bold(20, relativeTo: .title3))
+                        .foregroundStyle(FoamTheme.ink)
+                    HStack {
+                        FoamRoundIconButton(size: 40, accessibilityLabel: "戻る") {
+                            dismiss()
+                        } icon: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.82))
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                ScrollView {
+                    VStack(spacing: 16) {
+                        ReleaseBubbleCard(title: "相手の呼び方", isTogether: model.isTogetherNow, seed: 1.8) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                TextField("ニックネーム（任意）", text: $nicknameDraft)
+                                    .accessibilityLabel("相手の呼び方（任意）")
+                                    .textFieldStyle(.roundedBorder)
+                                    .submitLabel(.done)
+                                    .focused($isFocused)
+                                    .onSubmit(save)
+
+                                Text("設定のペア欄に表示される呼び方です（この端末のみ保存）")
+                                    .font(FoamFont.regular(12.5, relativeTo: .caption))
+                                    .foregroundStyle(FoamTheme.ink.opacity(0.64))
+                            }
+                        }
+
+                        Button("保存", action: save)
+                            .buttonStyle(FoamPrimaryActionStyle())
+
+                        if !nicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || !model.partnerNickname.isEmpty {
+                            Button("未設定にする") {
+                                model.setPartnerNickname("")
+                                dismiss()
+                            }
+                            .font(FoamFont.bold(14, relativeTo: .subheadline))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.72))
+                            .frame(minHeight: 44)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+                    .padding(.bottom, 34)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+        }
+        .font(FoamFont.medium(16))
+        .foregroundStyle(FoamTheme.ink)
+        .preferredColorScheme(.light)
+        .toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            nicknameDraft = model.partnerNickname
+        }
+    }
+
+    private func save() {
+        model.setPartnerNickname(nicknameDraft)
+        dismiss()
+    }
+}
+
 struct OptionalProfileDateRow: View {
     let title: String
     var unsetTitle: String? = nil
     var clearTitle = "クリア"
+    var showsClearButton = true
+    var showsTodayButton = true
     @Binding var date: CalendarDateValue?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -552,19 +647,23 @@ struct OptionalProfileDateRow: View {
                 ), in: ...Date.now, displayedComponents: .date)
                 .datePickerStyle(.compact)
 
-                HStack(spacing: 16) {
-                    if date == nil {
-                        Button("今日に設定") { date = CalendarDateValue(date: .now) }
+                if (showsTodayButton && date == nil) || showsClearButton {
+                    HStack(spacing: 16) {
+                        if showsTodayButton && date == nil {
+                            Button("今日に設定") { date = CalendarDateValue(date: .now) }
+                        }
+                        Spacer(minLength: 4)
+                        if showsClearButton {
+                            Button(clearTitle) {
+                                if date != nil { date = nil }
+                                setExpanded(false)
+                            }
+                            .disabled(date == nil && unsetTitle == nil)
+                        }
                     }
-                    Spacer(minLength: 4)
-                    Button(clearTitle) {
-                        if date != nil { date = nil }
-                        setExpanded(false)
-                    }
-                    .disabled(date == nil && unsetTitle == nil)
+                    .font(FoamFont.bold(14, relativeTo: .subheadline))
+                    .frame(minHeight: 44)
                 }
-                .font(FoamFont.bold(14, relativeTo: .subheadline))
-                .frame(minHeight: 44)
             }
         }
     }
