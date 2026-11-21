@@ -3,6 +3,7 @@ import Foundation
 public enum EncounterSource: Sendable, Equatable, Hashable {
     case auto(sessionID: UUID)
     case autoEdited(sessionID: UUID)
+    case locationMatched(sessionID: UUID)
     case manual(recordID: UUID)
 }
 
@@ -61,6 +62,17 @@ public struct DaySummary: Sendable, Equatable, Identifiable {
         if totalRecordedSeconds <= 18_000 { return .medium }
         return .large
     }
+
+    public var continuesFromPreviousDay: Bool {
+        slices.contains { $0.fullStart < $0.sliceStart }
+    }
+
+    public var continuesToNextDay: Bool {
+        slices.contains { slice in
+            guard let sliceEnd = slice.sliceEnd, let fullEnd = slice.fullEnd else { return false }
+            return fullEnd > sliceEnd
+        }
+    }
 }
 
 public enum EncounterCalendarAggregator {
@@ -70,7 +82,9 @@ public enum EncounterCalendarAggregator {
     }
 
     public static func resolveEncounters(
-        autoSessions: [EncounterSession], journal: JournalSnapshot
+        autoSessions: [EncounterSession],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot
     ) -> [ResolvedEncounter] {
         // Keep manual corrections authoritative when the automatic log is refreshed (SPEC §4.1).
         let automatic: [ResolvedEncounter] = autoSessions.compactMap { session in
@@ -89,6 +103,32 @@ public enum EncounterCalendarAggregator {
                 )
             }
         }
+        let completedBleIntervals = mergedDateIntervals(automatic.compactMap { encounter in
+            guard encounter.status == .completed, let end = encounter.endedAt, end > encounter.startedAt else { return nil }
+            return DateInterval(start: encounter.startedAt, end: end)
+        })
+        let locationResolved: [ResolvedEncounter] = locationSessions.compactMap { loc in
+            switch journal.sessionOverrides[loc.id]?.action {
+            case .deleted:
+                return nil
+            case let .edited(startedAt, endedAt):
+                return ResolvedEncounter(
+                    id: loc.id, source: .autoEdited(sessionID: loc.id),
+                    startedAt: startedAt, endedAt: endedAt, status: .completed, connectionPath: nil
+                )
+            case nil:
+                guard loc.endedAt > loc.startedAt else { return nil }
+                let locInterval = DateInterval(start: loc.startedAt, end: loc.endedAt)
+                let covered = coveredDuration(of: locInterval, by: completedBleIntervals)
+                if locInterval.duration > 0, (covered / locInterval.duration) >= 0.95 {
+                    return nil
+                }
+                return ResolvedEncounter(
+                    id: loc.id, source: .locationMatched(sessionID: loc.id),
+                    startedAt: loc.startedAt, endedAt: loc.endedAt, status: .completed, connectionPath: nil
+                )
+            }
+        }
         let manual: [ResolvedEncounter] = journal.manualRecords.compactMap { record in
             guard record.endedAt >= record.startedAt else { return nil }
             return ResolvedEncounter(
@@ -96,18 +136,25 @@ public enum EncounterCalendarAggregator {
                 endedAt: record.endedAt, status: .completed, connectionPath: nil
             )
         }
-        return (automatic + manual).sorted {
+        return (automatic + locationResolved + manual).sorted {
             if $0.startedAt == $1.startedAt { return $0.id.uuidString < $1.id.uuidString }
             return $0.startedAt < $1.startedAt
         }
     }
 
     public static func daySummaries(
-        forMonth monthDate: Date, autoSessions: [EncounterSession], journal: JournalSnapshot,
+        forMonth monthDate: Date,
+        autoSessions: [EncounterSession],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot,
         calendar: Calendar = .current
     ) -> [String: DaySummary] {
         guard let month = calendar.dateInterval(of: .month, for: monthDate) else { return [:] }
-        let encounters = resolveEncounters(autoSessions: autoSessions, journal: journal)
+        let encounters = resolveEncounters(
+            autoSessions: autoSessions,
+            locationSessions: locationSessions,
+            journal: journal
+        )
         var slicesByDay: [Date: [DayEncounterSlice]] = [:]
         for encounter in encounters {
             // Start inside the requested month so long encounters only visit days they can contribute to.
@@ -136,13 +183,21 @@ public enum EncounterCalendarAggregator {
     }
 
     public static func daySummary(
-        for date: Date, autoSessions: [EncounterSession], journal: JournalSnapshot, calendar: Calendar = .current
+        for date: Date,
+        autoSessions: [EncounterSession],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot,
+        calendar: Calendar = .current
     ) -> DaySummary {
         let start = calendar.startOfDay(for: date)
         let key = dayKey(for: start, calendar: calendar)
         let slices: [DayEncounterSlice]
         if let day = calendar.dateInterval(of: .day, for: start) {
-            slices = resolveEncounters(autoSessions: autoSessions, journal: journal).compactMap {
+            slices = resolveEncounters(
+                autoSessions: autoSessions,
+                locationSessions: locationSessions,
+                journal: journal
+            ).compactMap {
                 makeSlice($0, day: day, calendar: calendar)
             }
         } else {
@@ -152,18 +207,34 @@ public enum EncounterCalendarAggregator {
     }
 
     public static func monthlyRecordedSeconds(
-        forMonth monthDate: Date, autoSessions: [EncounterSession], journal: JournalSnapshot,
+        forMonth monthDate: Date,
+        autoSessions: [EncounterSession],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot,
         calendar: Calendar = .current
     ) -> TimeInterval {
-        let summaries = daySummaries(forMonth: monthDate, autoSessions: autoSessions, journal: journal, calendar: calendar)
+        let summaries = daySummaries(
+            forMonth: monthDate,
+            autoSessions: autoSessions,
+            locationSessions: locationSessions,
+            journal: journal,
+            calendar: calendar
+        )
         return summaries.keys.sorted().reduce(0) { $0 + (summaries[$1]?.totalRecordedSeconds ?? 0) }
     }
 
     public static func lifetimeRecordedSeconds(
-        autoSessions: [EncounterSession], journal: JournalSnapshot, calendar: Calendar = .current
+        autoSessions: [EncounterSession],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot,
+        calendar: Calendar = .current
     ) -> TimeInterval {
         // Absolute intervals have the same elapsed duration in every time zone.
-        let intervals: [DateInterval] = resolveEncounters(autoSessions: autoSessions, journal: journal).compactMap {
+        let intervals: [DateInterval] = resolveEncounters(
+            autoSessions: autoSessions,
+            locationSessions: locationSessions,
+            journal: journal
+        ).compactMap {
             guard $0.status == .completed, let end = $0.endedAt, end > $0.startedAt else { return nil }
             return DateInterval(start: $0.startedAt, end: end)
         }
@@ -171,10 +242,19 @@ public enum EncounterCalendarAggregator {
     }
 
     public static func metDayCount(
-        forMonth monthDate: Date, autoSessions: [EncounterSession], journal: JournalSnapshot,
+        forMonth monthDate: Date,
+        autoSessions: [EncounterSession],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot,
         calendar: Calendar = .current
     ) -> Int {
-        daySummaries(forMonth: monthDate, autoSessions: autoSessions, journal: journal, calendar: calendar)
+        daySummaries(
+            forMonth: monthDate,
+            autoSessions: autoSessions,
+            locationSessions: locationSessions,
+            journal: journal,
+            calendar: calendar
+        )
             .values.count { !$0.slices.isEmpty }
     }
 
@@ -216,19 +296,34 @@ public enum EncounterCalendarAggregator {
 
     /// Returns the elapsed seconds covered by intervals ordered by start time (SPEC §4.2).
     private static func unionDuration(_ intervals: [DateInterval]) -> TimeInterval {
-        guard let first = intervals.first else { return 0 }
-        var start = first.start
-        var end = first.end
-        var total: TimeInterval = 0
-        for interval in intervals.dropFirst() {
-            if interval.start > end {
-                total += end.timeIntervalSince(start)
-                start = interval.start
-                end = interval.end
-            } else {
-                end = max(end, interval.end)
+        mergedDateIntervals(intervals).reduce(0) { $0 + $1.duration }
+    }
+
+    private static func mergedDateIntervals(_ intervals: [DateInterval]) -> [DateInterval] {
+        let ordered = intervals.filter { $0.end > $0.start }.sorted {
+            if $0.start == $1.start { return $0.end < $1.end }
+            return $0.start < $1.start
+        }
+        guard let first = ordered.first else { return [] }
+        var result = [first]
+        for interval in ordered.dropFirst() {
+            let last = result[result.count - 1]
+            if interval.start > last.end {
+                result.append(interval)
+            } else if interval.end > last.end {
+                result[result.count - 1] = DateInterval(start: last.start, end: interval.end)
             }
         }
-        return total + end.timeIntervalSince(start)
+        return result
+    }
+
+    private static func coveredDuration(of target: DateInterval, by merged: [DateInterval]) -> TimeInterval {
+        var total: TimeInterval = 0
+        for item in merged {
+            let s = max(target.start, item.start)
+            let e = min(target.end, item.end)
+            if e > s { total += e.timeIntervalSince(s) }
+        }
+        return total
     }
 }

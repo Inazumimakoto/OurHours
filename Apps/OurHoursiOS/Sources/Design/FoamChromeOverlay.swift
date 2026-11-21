@@ -7,28 +7,47 @@ struct FoamChromeOverlay: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Image("FoamCornerCluster").resizable().scaledToFit().frame(width: 160)
+            Image("FoamCornerCluster")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 152)
                 .scaleEffect(breathe ? 1.035 : 1, anchor: .topLeading)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
-                .onAppear { breathe = true }
-                .allowsHitTesting(false).accessibilityHidden(true).ignoresSafeArea(edges: [.top, .leading])
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .ignoresSafeArea(edges: [.top, .leading])
+
             HStack {
                 Spacer()
-                Button(action: onOpenSettings) {
-                    Image("FoamCalendarStamp").resizable().scaledToFit().frame(width: 50, height: 50)
-                        .overlay { Image(systemName: "gearshape.fill").font(.title3) }
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    onOpenSettings()
+                }) {
+                    Image("FoamSettingsLather")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 56, height: 56)
+                        .shadow(color: FoamTheme.ink.opacity(0.09), radius: 6, y: 3)
+                        .overlay { FoamSettingsIcon() }
                 }
-                .buttonStyle(FoamSettingsButtonStyle()).accessibilityLabel("設定")
-            }.padding(.horizontal, 16)
+                .buttonStyle(FoamSettingsButtonStyle())
+                .accessibilityLabel("設定")
+            }
+            .padding(.trailing, 14)
+            .padding(.top, 2)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .onAppear { breathe = true }
     }
 }
 
 private struct FoamSettingsButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.90 : 1)
-            .animation(.spring(response: 0.3, dampingFraction: 0.65), value: configuration.isPressed)
+            .scaleEffect(
+                x: configuration.isPressed ? 1.06 : 1.0,
+                y: configuration.isPressed ? 0.89 : 1.0
+            )
+            .animation(.spring(response: 0.28, dampingFraction: 0.64), value: configuration.isPressed)
     }
 }

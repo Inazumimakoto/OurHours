@@ -177,6 +177,10 @@ final class MacPeerModel {
         engine.clearLogs()
     }
 
+    func handleForegroundActivation() {
+        engine.handleForegroundActivation()
+    }
+
     func export(_ format: ExportFormat) async throws {
         guard !isExporting else { return }
         isExporting = true

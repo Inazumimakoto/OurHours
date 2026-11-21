@@ -18,6 +18,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         var wasRestored = false
         var restoredCleanupID: UUID?
         var awaitingServerAuth = false
+        var authStartedAt: Date?
+        var invalidHandleRetried = false
 
         init(_ peripheral: CBPeripheral, path: ConnectionPath) {
             self.peripheral = peripheral
@@ -32,6 +34,7 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         var pending: Data?
         var pendingCompletesAuth = false
         var path: ConnectionPath
+        var authStartedAt: Date?
     }
 
     private let queue = DispatchQueue(label: "io.github.inazumimakoto.OurHours.ble")
@@ -250,6 +253,73 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             } catch {
                 recordError(.storage, "clearLogsFailed", error)
             }
+        }
+    }
+
+    public func handleForegroundActivation() {
+        onQueue {
+            refreshOnActivation(
+                kind: "foregroundRefresh",
+                message: "Refreshed BLE connections on foreground activation.",
+                source: "foregroundCheck",
+                extraMetadata: [:]
+            )
+        }
+    }
+
+    public func handleBackgroundWake(source: String) {
+        onQueue {
+            refreshOnActivation(
+                kind: "backgroundWake",
+                message: "Refreshed BLE connections from background wake.",
+                source: "backgroundWake",
+                extraMetadata: ["source": source]
+            )
+        }
+    }
+
+    private func refreshOnActivation(
+        kind: String, message: String, source: String, extraMetadata: [String: String]
+    ) {
+        let now = Date()
+        var recoveredSomething = false
+
+        for peer in Array(centralPeers.values)
+        where peer.phase == .authenticating {
+            if let started = peer.authStartedAt,
+               now.timeIntervalSince(started) >= BLEConstants.authTimeoutSeconds {
+                cancel(peer)
+                recordError(
+                    .auth, "centralAuthFailed", AuthError.expired,
+                    metadata: ["peerID": peer.peripheral.identifier.uuidString, "source": source]
+                )
+                recoveredSomething = true
+            }
+        }
+
+        for (id, peer) in Array(peripheralPeers) where peer.handshake != nil {
+            if let started = peer.authStartedAt,
+               now.timeIntervalSince(started) >= BLEConstants.authTimeoutSeconds {
+                failPeripheralAuth(id, error: AuthError.expired)
+                recoveredSomething = true
+            }
+        }
+
+        if let knownID = lastAuthenticatedPeripheralID, cooldowns.removeValue(forKey: knownID) != nil {
+            recoveredSomething = true
+        }
+
+        if canRecord && coordinator.activeLinks.isEmpty {
+            if centralManager?.isScanning == true { centralManager?.stopScan() }
+            refreshRadios()
+            var metadata = extraMetadata
+            metadata["recovered"] = String(recoveredSomething)
+            record(.lifecycle, kind, message, metadata: metadata)
+            reconcileLaunchIfReady()
+            publish()
+        } else if recoveredSomething {
+            reconcileLaunchIfReady()
+            publish()
         }
     }
 
@@ -508,6 +578,8 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         let shouldRemoveImmediately = peer.peripheral.state == .disconnected
         peer.phase = .cancelling
         peer.timeoutID = nil
+        peer.authStartedAt = nil
+        peer.invalidHandleRetried = false
         peer.handshake = nil
         peer.characteristic = nil
         centralManager?.cancelPeripheralConnection(peer.peripheral)
@@ -529,11 +601,49 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
+    static func isInvalidHandleError(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == CBATTErrorDomain && nsError.code == CBATTError.invalidHandle.rawValue
+    }
+
+    static func authFailureCooldown(
+        for peerID: UUID, lastAuthenticatedPeripheralID: UUID?, error: any Error
+    ) -> TimeInterval {
+        guard peerID == lastAuthenticatedPeripheralID else {
+            return BLEConstants.failedPeerCooldownSeconds
+        }
+        // Keep long cooldown only for hard cryptographic / pairing rejections (wrong key, epoch, role, etc.).
+        if let authError = error as? AuthError, authError != .expired {
+            return BLEConstants.failedPeerCooldownSeconds
+        }
+        return BLEConstants.knownPeerAuthFailureCooldownSeconds
+    }
+
     private func failCentralAuth(_ peer: CentralPeer, error: any Error) {
         let id = peer.peripheral.identifier
-        enterCooldown(id)
+        if Self.isInvalidHandleError(error), !peer.invalidHandleRetried,
+           peer.peripheral.state == .connected, canRecord, let pairConfiguration {
+            peer.invalidHandleRetried = true
+            peer.characteristic = nil
+            peer.awaitingServerAuth = false
+            armCentralHandshake(peer, configuration: pairConfiguration)
+            let token = peer.timeoutID
+            record(.auth, "invalidHandleRetry", "Retrying full service discovery after invalid GATT handle.",
+                   metadata: ["peerID": id.uuidString])
+            queue.asyncAfter(deadline: .now() + BLEConstants.invalidHandleRediscoveryDelaySeconds) { [weak self] in
+                guard let self, let current = centralPeers[id], current.timeoutID == token,
+                      current.phase == .authenticating, current.peripheral.state == .connected else { return }
+                current.peripheral.discoverServices(nil)
+            }
+            return
+        }
+        let cooldown = Self.authFailureCooldown(
+            for: id, lastAuthenticatedPeripheralID: lastAuthenticatedPeripheralID, error: error
+        )
+        enterCooldown(id, duration: cooldown)
         cancel(peer)
-        recordError(.auth, "centralAuthFailed", error, metadata: ["peerID": id.uuidString])
+        recordError(.auth, "centralAuthFailed", error,
+                    metadata: ["peerID": id.uuidString, "cooldownSeconds": String(Int(cooldown))])
         reconcileLaunchIfReady()
         refreshCentral(lookup: false)
     }
@@ -555,6 +665,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         let token = UUID()
         peer.phase = .authenticating
         peer.timeoutID = token
+        peer.authStartedAt = Date()
         peer.awaitingServerAuth = false
         peer.handshake = CentralAuthSession(configuration: configuration)
         queue.asyncAfter(deadline: .now() + BLEConstants.authTimeoutSeconds) { [weak self] in
@@ -716,6 +827,8 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
             peer.path = .autoReconnect
             peer.handshake = nil
             peer.timeoutID = nil
+            peer.authStartedAt = nil
+            peer.invalidHandleRetried = false
             peer.characteristic = nil
         } else {
             if isReconnecting == true {
@@ -815,6 +928,8 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
                 try handshake.receiveServerAuth(data)
                 peer.phase = .authenticated
                 peer.timeoutID = nil
+                peer.authStartedAt = nil
+                peer.invalidHandleRetried = false
                 peer.handshake = nil
                 authenticated(.central(peripheral.identifier), path: peer.path)
                 for other in centralPeers.values where other !== peer { cancel(other) }
@@ -904,7 +1019,9 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
         var handshake = PeripheralAuthSession(configuration: pairConfiguration)
         do {
             let hello = try handshake.makeServerHello()
-            peripheralPeers[id] = PeripheralPeer(central: central, handshake: handshake, timeoutID: token, path: path)
+            peripheralPeers[id] = PeripheralPeer(
+                central: central, handshake: handshake, timeoutID: token, path: path, authStartedAt: Date()
+            )
             try sendNotification(hello, to: id, completesAuth: false)
         } catch {
             failPeripheralAuth(id, error: error)

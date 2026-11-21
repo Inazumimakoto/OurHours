@@ -18,6 +18,7 @@
 		AA0000020000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000020000000000000005 /* OurHoursMacPeer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OurHoursMacPeer.entitlements; sourceTree = "<group>"; };
 		AA0000020000000000000006 /* SPEC.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = SPEC.md; path = docs/SPEC.md; sourceTree = "<group>"; };
+		AA0000020000000000000007 /* OurHoursiOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OurHoursiOS.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -75,6 +76,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000020000000000000003 /* Info.plist */,
+				AA0000020000000000000007 /* OurHoursiOS.entitlements */,
 				AA0000030000000000000001 /* Sources */,
 			);
 			path = OurHoursiOS;
@@ -343,6 +345,7 @@
 		AA00000D0000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Apps/OurHoursiOS/OurHoursiOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V7XG8HDQL4;
@@ -369,6 +372,7 @@
 		AA00000D0000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Apps/OurHoursiOS/OurHoursiOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V7XG8HDQL4;

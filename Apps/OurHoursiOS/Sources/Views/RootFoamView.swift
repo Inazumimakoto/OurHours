@@ -1,9 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct RootFoamView: View {
     let appModel: AppModel
     @State private var tab = FoamTab.home
     @State private var burst: FoamBurstEvent?
+    @State private var lastBurstTimestamp = Date.distantPast
     @State private var showSettings = false
     @State private var showPairing = false
     @State private var month = Date.now
@@ -13,32 +15,62 @@ struct RootFoamView: View {
             FoamTheme.sky(together: false).ignoresSafeArea()
             FoamTheme.sky(together: true).ignoresSafeArea().opacity(appModel.isTogetherNow ? 1 : 0)
                 .animation(.easeInOut(duration: 1), value: appModel.isTogetherNow)
-            RisingFoamParticlesView(isTogether: appModel.isTogetherNow, burstEvent: burst).ignoresSafeArea()
+            FoamAmbientBackgroundView(isTogether: appModel.isTogetherNow).ignoresSafeArea()
+            FoamTapObserverView(excludedBottomHeight: 112) { normalizedPoint in
+                emitScreenPuff(at: normalizedPoint)
+            }
+            .ignoresSafeArea()
             Group {
                 if tab == .home {
-                    HomeView(onPair: { showPairing = true }, onBurst: { emit(0.5) }, onCalendar: { date in
-                        month = date
-                        tab = .calendar
-                    })
+                    HomeView(
+                        onPair: { showPairing = true },
+                        onBurst: {
+                            // Finger taps are handled at exact coordinates by FoamTapObserverView.
+                            if UIAccessibility.isVoiceOverRunning {
+                                emitScreenPuff(at: CGPoint(x: 0.5, y: 0.48))
+                            }
+                        },
+                        onCalendar: { date in
+                            month = date
+                            tab = .calendar
+                        }
+                    )
                 } else {
                     CalendarView(displayedMonth: $month)
                 }
-            }.padding(.bottom, 88)
+            }.padding(.bottom, 96)
             FoamChromeOverlay { showSettings = true }
             VStack {
                 Spacer()
-                FoamTabBar(selected: $tab, onBurst: emit)
+                FoamTabBar(selected: $tab, isTogether: appModel.isTogetherNow, onBurst: emitTabSplash)
             }
+            FoamTapBurstsOverlayView(burstEvent: burst).ignoresSafeArea()
         }
-        .fontDesign(.rounded).foregroundStyle(FoamTheme.ink)
+        .font(FoamFont.medium(16))
+        .foregroundStyle(FoamTheme.ink)
         .sheet(isPresented: $showSettings) {
-            NavigationStack { SettingsView().toolbar { Button("閉じる") { showSettings = false } } }
+            NavigationStack {
+                SettingsView()
+                    .toolbar {
+                        Button("閉じる") { showSettings = false }
+                            .font(FoamFont.bold(16))
+                    }
+            }
+            .font(FoamFont.medium(16))
         }
         .sheet(isPresented: $showPairing) { PairingView() }
         .environment(appModel)
     }
 
-    private func emit(_ origin: CGFloat) {
-        burst = FoamBurstEvent(originNormalizedX: origin, count: Int.random(in: 6...9))
+    private func emitTabSplash(_ originX: CGFloat) {
+        lastBurstTimestamp = .now
+        burst = FoamBurstEvent.tabSplash(originNormalizedX: originX)
+    }
+
+    private func emitScreenPuff(at normalizedPoint: CGPoint) {
+        let now = Date.now
+        guard now.timeIntervalSince(lastBurstTimestamp) > 0.08 else { return }
+        lastBurstTimestamp = now
+        burst = FoamBurstEvent.screenPuff(originNormalized: normalizedPoint)
     }
 }

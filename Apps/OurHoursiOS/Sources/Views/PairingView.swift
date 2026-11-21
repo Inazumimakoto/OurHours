@@ -14,12 +14,15 @@ struct PairingView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Bluetoothとプライバシー") {
-                    Text("画面を閉じている間も、ペアのiPhoneが近くにあった日と時間を推定して記録・共有します")
-                    Text("この検証版では記録を端末内に保存します。自動記録は設定で停止できます。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                Section {
+                    Text("画面を閉じている間も、Bluetoothと暗号化した位置滞在ログの突き合わせで「一緒にいる時間」を自動記録します")
+                    Text("地図や相手の位置座標は画面に表示しません。自動記録や位置補完は設定でいつでも停止できます。")
+                        .font(FoamFont.regular(13, relativeTo: .footnote))
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("プライバシーと仕組み").font(FoamFont.bold(13, relativeTo: .footnote))
                 }
-                Section("相手を招待する") {
+                Section {
                     if let invite {
                         if let qrImage {
                             Image(decorative: qrImage, scale: 1).interpolation(.none).resizable()
@@ -31,28 +34,37 @@ struct PairingView: View {
                             UIPasteboard.general.setItems([["public.utf8-plain-text": invite]],
                                 options: [.localOnly: true, .expirationDate: Date.now.addingTimeInterval(300)])
                         }
+                        .font(FoamFont.bold(16))
                     } else if !model.snapshot.isPaired {
                         Button("同意して招待QRコードを作成") {
                             do { display(try model.startInvitePairing()) }
                             catch { errorMessage = error.localizedDescription }
                         }
+                        .font(FoamFont.bold(16))
                     }
+                } header: {
+                    Text("相手を招待する").font(FoamFont.bold(13, relativeTo: .footnote))
                 }
                 if invite == nil && !model.snapshot.isPaired {
-                    Section("相手の招待で設定する") {
+                    Section {
                         Button("同意してQRコードを読み取る") { showScanner = true }
+                            .font(FoamFont.bold(16))
                         TextField("ourhours://… を貼り付け", text: $manualURL, axis: .vertical)
                             .keyboardType(.URL).autocorrectionDisabled().textInputAutocapitalization(.never)
                         Button("同意して招待URLで設定") { complete(manualURL) }
+                            .font(FoamFont.bold(16))
                             .disabled(manualURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } header: {
+                        Text("相手の招待で設定する").font(FoamFont.bold(13, relativeTo: .footnote))
                     }
                 }
                 if let errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                 }
             }
+            .font(FoamFont.medium(16))
             .navigationTitle("ペア設定")
-            .toolbar { Button("閉じる") { dismiss() } }
+            .toolbar { Button("閉じる") { dismiss() }.font(FoamFont.bold(16)) }
             .onAppear {
                 if invite == nil, let config = model.snapshot.pairConfiguration, config.localRole == .partnerA {
                     display(PairingPayloadCodec.encode(config, for: .partnerB))
@@ -64,6 +76,7 @@ struct PairingView: View {
                 QRScannerView { value in scannedURL = value; showScanner = false }
             }
         }
+        .font(FoamFont.medium(16))
     }
 
     private func display(_ value: String) {

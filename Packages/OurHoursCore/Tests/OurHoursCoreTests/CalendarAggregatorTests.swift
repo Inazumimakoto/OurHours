@@ -155,4 +155,51 @@ struct CalendarAggregatorTests {
         )
         #expect(summary.bubbleIntensity == intensity)
     }
+
+    @Test func multiDayContinuityFlagsTrackOvernightAndMultiDayEncounters() throws {
+        // 1. Same-day session: neither flag set
+        let sameStart = try date("2026-11-02T14:00:00+09:00")
+        let sameEnd = try date("2026-11-02T18:00:00+09:00")
+        let sameDay = EncounterCalendarAggregator.daySummary(
+            for: sameStart, autoSessions: [session(sameStart, sameEnd)], journal: JournalSnapshot(), calendar: tokyo
+        )
+        #expect(!sameDay.continuesFromPreviousDay)
+        #expect(!sameDay.continuesToNextDay)
+
+        // 2. Overnight 2-day session
+        let overStart = try date("2026-11-05T22:00:00+09:00")
+        let overEnd = try date("2026-11-06T09:00:00+09:00")
+        let twoDaySummaries = EncounterCalendarAggregator.daySummaries(
+            forMonth: overStart, autoSessions: [session(overStart, overEnd)], journal: JournalSnapshot(), calendar: tokyo
+        )
+        let d5 = try #require(twoDaySummaries["2026-11-05"])
+        let d6 = try #require(twoDaySummaries["2026-11-06"])
+        #expect(!d5.continuesFromPreviousDay)
+        #expect(d5.continuesToNextDay)
+        #expect(d6.continuesFromPreviousDay)
+        #expect(!d6.continuesToNextDay)
+
+        // 3. 3-day session: middle day has both flags set
+        let threeStart = try date("2026-11-10T20:00:00+09:00")
+        let threeEnd = try date("2026-11-12T10:00:00+09:00")
+        let threeSummaries = EncounterCalendarAggregator.daySummaries(
+            forMonth: threeStart, autoSessions: [session(threeStart, threeEnd)], journal: JournalSnapshot(), calendar: tokyo
+        )
+        let d10 = try #require(threeSummaries["2026-11-10"])
+        let d11 = try #require(threeSummaries["2026-11-11"])
+        let d12 = try #require(threeSummaries["2026-11-12"])
+        #expect(!d10.continuesFromPreviousDay && d10.continuesToNextDay)
+        #expect(d11.continuesFromPreviousDay && d11.continuesToNextDay)
+        #expect(d12.continuesFromPreviousDay && !d12.continuesToNextDay)
+
+        // 4. Exact midnight end: 22:00 -> 00:00 stays strictly on day 1
+        let midStart = try date("2026-11-15T22:00:00+09:00")
+        let midEnd = try date("2026-11-16T00:00:00+09:00")
+        let midSummaries = EncounterCalendarAggregator.daySummaries(
+            forMonth: midStart, autoSessions: [session(midStart, midEnd)], journal: JournalSnapshot(), calendar: tokyo
+        )
+        let d15 = try #require(midSummaries["2026-11-15"])
+        #expect(!d15.continuesFromPreviousDay && !d15.continuesToNextDay)
+        #expect(midSummaries["2026-11-16"] == nil)
+    }
 }

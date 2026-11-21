@@ -35,7 +35,7 @@ struct QRScannerView: View {
             }
             .navigationTitle("QRコードを読み取る")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("閉じる") { dismiss() } }
+            .toolbar { Button("閉じる") { dismiss() }.font(FoamFont.bold(16)) }
             .task {
                 if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
                     _ = await AVCaptureDevice.requestAccess(for: .video)
@@ -46,6 +46,7 @@ struct QRScannerView: View {
                 if scenePhase == .active { authorization = AVCaptureDevice.authorizationStatus(for: .video) }
             }
         }
+        .font(FoamFont.medium(16))
     }
 }
 

@@ -1,6 +1,7 @@
 import Observation
 import OurHoursCore
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 @MainActor @Observable
@@ -8,17 +9,55 @@ final class AppModel {
     private let engine: OurHoursBLEEngine
     private(set) var snapshot: EngineSnapshot
     @ObservationIgnored private var subscription: Task<Void, Never>?
+    @ObservationIgnored private var scheduledSyncTask: Task<Void, Never>?
 
     private let journalStore: JournalStore
     private(set) var journal = JournalSnapshot()
     var journalError: String?
 
-    init(engine: OurHoursBLEEngine, journalStore: JournalStore = JournalStore()) {
-        self.journalStore = journalStore
+    private let locationStore: LocationTimelineStore
+    private let locationSync: CloudKitLocationSync
+    let locationMonitor: LocationPresenceMonitor
+    private(set) var locationMatchedSessions: [LocationMatchedSession] = []
+    private(set) var locationSyncState: LocationSyncState = .idle
+
+    init(
+        engine: OurHoursBLEEngine,
+        journalStore: JournalStore = JournalStore(),
+        locationStore: LocationTimelineStore = LocationTimelineStore(),
+        locationSync: CloudKitLocationSync = CloudKitLocationSync()
+    ) {
         self.engine = engine
+        self.journalStore = journalStore
+        self.locationStore = locationStore
+        self.locationSync = locationSync
+
+        var sink: (@MainActor (LocationVisitRecord, Bool) -> Void)?
+        var pointSink: (@MainActor (LocationPointSample) -> Void)?
+
+        self.locationMonitor = LocationPresenceMonitor(
+            onVisit: { visit, arrivalUnknown in sink?(visit, arrivalUnknown) },
+            onPoint: { point in pointSink?(point) },
+            onWake: { [weak engine] source in
+                engine?.handleBackgroundWake(source: source)
+            }
+        )
+
         snapshot = engine.currentSnapshot()
         do { journal = try journalStore.load() }
         catch { journalError = error.localizedDescription }
+
+        if let initialLocation = try? locationStore.load() {
+            locationMatchedSessions = initialLocation.matchedSessions
+        }
+
+        sink = { [weak self] visit, arrivalUnknown in
+            self?.handleCapturedVisit(visit, arrivalUnknown: arrivalUnknown)
+        }
+        pointSink = { [weak self] point in
+            self?.handleCapturedPoint(point)
+        }
+
         let snapshots = engine.snapshotStream()
         subscription = Task { [weak self] in
             for await value in snapshots {
@@ -27,14 +66,39 @@ final class AppModel {
         }
     }
 
-    deinit { subscription?.cancel() }
+    deinit {
+        subscription?.cancel()
+        scheduledSyncTask?.cancel()
+    }
 
     var isAutoRecordingEnabled: Bool { snapshot.isAutoRecordingEnabled }
 
     var isTogetherNow: Bool { snapshot.activeSession != nil }
     var activeSessionStartDate: Date? { snapshot.activeSession?.startedAt }
     var resolvedEncounters: [ResolvedEncounter] {
-        EncounterCalendarAggregator.resolveEncounters(autoSessions: snapshot.sessions, journal: journal)
+        EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: snapshot.sessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
+    }
+
+    var locationSyncStatusText: String {
+        switch locationSyncState {
+        case .idle:
+            return snapshot.isPaired ? "未同期" : "ペア設定後に同期します"
+        case .syncing:
+            return "CloudKit 同期中…"
+        case let .synced(date, peerDays):
+            return "\(date.formatted(date: .omitted, time: .shortened)) 同期済み（相手 \(peerDays) 日分）"
+        case let .unavailable(reason), let .failed(reason):
+            return reason
+        }
+    }
+
+    var isLocationSyncing: Bool {
+        if case .syncing = locationSyncState { return true }
+        return false
     }
 
     private func write(_ operation: (JournalStore) throws -> JournalSnapshot) {
@@ -52,15 +116,17 @@ final class AppModel {
         switch encounter.source {
         case let .manual(id):
             write { try $0.updateManualRecord(id: id, startedAt: startedAt, endedAt: endedAt) }
-        case let .auto(id), let .autoEdited(id):
+        case let .auto(id), let .autoEdited(id), let .locationMatched(id):
             write { try $0.setSessionOverride(sessionID: id, action: .edited(startedAt: startedAt, endedAt: endedAt)) }
         }
     }
 
     func deleteResolvedEncounter(_ encounter: ResolvedEncounter) {
         switch encounter.source {
-        case let .manual(id): write { try $0.deleteManualRecord(id: id) }
-        case let .auto(id), let .autoEdited(id): write { try $0.setSessionOverride(sessionID: id, action: .deleted) }
+        case let .manual(id):
+            write { try $0.deleteManualRecord(id: id) }
+        case let .auto(id), let .autoEdited(id), let .locationMatched(id):
+            write { try $0.setSessionOverride(sessionID: id, action: .deleted) }
         }
     }
 
@@ -73,23 +139,47 @@ final class AppModel {
     }
 
     func daySummaries(forMonth monthDate: Date) -> [String: DaySummary] {
-        EncounterCalendarAggregator.daySummaries(forMonth: monthDate, autoSessions: snapshot.sessions, journal: journal)
+        EncounterCalendarAggregator.daySummaries(
+            forMonth: monthDate,
+            autoSessions: snapshot.sessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
     }
 
     func daySummary(for date: Date) -> DaySummary {
-        EncounterCalendarAggregator.daySummary(for: date, autoSessions: snapshot.sessions, journal: journal)
+        EncounterCalendarAggregator.daySummary(
+            for: date,
+            autoSessions: snapshot.sessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
     }
 
     func monthlyRecordedSeconds(forMonth monthDate: Date) -> TimeInterval {
-        EncounterCalendarAggregator.monthlyRecordedSeconds(forMonth: monthDate, autoSessions: snapshot.sessions, journal: journal)
+        EncounterCalendarAggregator.monthlyRecordedSeconds(
+            forMonth: monthDate,
+            autoSessions: snapshot.sessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
     }
 
     func metDayCount(forMonth monthDate: Date) -> Int {
-        EncounterCalendarAggregator.metDayCount(forMonth: monthDate, autoSessions: snapshot.sessions, journal: journal)
+        EncounterCalendarAggregator.metDayCount(
+            forMonth: monthDate,
+            autoSessions: snapshot.sessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
     }
 
     func lifetimeRecordedSeconds() -> TimeInterval {
-        EncounterCalendarAggregator.lifetimeRecordedSeconds(autoSessions: snapshot.sessions, journal: journal)
+        EncounterCalendarAggregator.lifetimeRecordedSeconds(
+            autoSessions: snapshot.sessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal
+        )
     }
 
     func startInvitePairing() throws -> String {
@@ -111,11 +201,110 @@ final class AppModel {
             throw PairSetupError.saveFailed
         }
         engine.start()
+        if locationMonitor.isEnabled {
+            locationMonitor.startIfAuthorized()
+            scheduleLocationSync(delay: .seconds(1))
+        }
     }
 
-    func unpair() { engine.unpair() }
-    func setAutoRecordingEnabled(_ enabled: Bool) { engine.setAutoRecordingEnabled(enabled) }
-    func clearLogs() { engine.clearLogs() }
+    func unpair() {
+        let previousConfig = snapshot.pairConfiguration
+        engine.unpair()
+        scheduledSyncTask?.cancel()
+        _ = try? locationStore.clearAll()
+        locationMatchedSessions = []
+        locationSyncState = .idle
+        if let previousConfig {
+            Task { await locationSync.purgeOwnRecords(config: previousConfig) }
+        }
+    }
+
+    func setAutoRecordingEnabled(_ enabled: Bool) {
+        engine.setAutoRecordingEnabled(enabled)
+        if enabled && locationMonitor.isEnabled {
+            scheduleLocationSync(delay: .seconds(1))
+        }
+    }
+
+    func clearLogs() {
+        engine.clearLogs()
+        _ = try? locationStore.clearAll()
+        locationMatchedSessions = []
+        locationSyncState = .idle
+    }
+
+    func handleForegroundActivation() {
+        engine.handleForegroundActivation()
+        locationMonitor.startIfAuthorized()
+        if locationMonitor.isEnabled && snapshot.isPaired && isAutoRecordingEnabled {
+            Task { await syncLocationNow(requestFreshFix: true) }
+        }
+    }
+
+    func handleBackgroundLocationLaunch() {
+        engine.handleBackgroundWake(source: "launchLocation")
+        locationMonitor.startIfAuthorized()
+        if locationMonitor.isEnabled && snapshot.isPaired && isAutoRecordingEnabled {
+            Task { await syncLocationNow(requestFreshFix: false) }
+        }
+    }
+
+    func syncLocationNow(requestFreshFix: Bool) async {
+        guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled, locationMonitor.isEnabled else {
+            return
+        }
+        if requestFreshFix {
+            locationMonitor.requestFreshFix(source: .manualSyncFix)
+        }
+        guard !isLocationSyncing else { return }
+
+        locationSyncState = .syncing
+        var bgTaskID = UIBackgroundTaskIdentifier.invalid
+        bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "OurHoursLocationSync") {
+            if bgTaskID != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTaskID)
+                bgTaskID = .invalid
+            }
+        }
+        defer {
+            if bgTaskID != .invalid {
+                UIApplication.shared.endBackgroundTask(bgTaskID)
+            }
+        }
+
+        let state = await locationSync.sync(config: config, store: locationStore)
+        locationSyncState = state
+        if let updated = try? locationStore.load() {
+            locationMatchedSessions = updated.matchedSessions
+        }
+    }
+
+    private func handleCapturedVisit(_ visit: LocationVisitRecord, arrivalUnknown: Bool) {
+        guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled else { return }
+        _ = try? locationStore.recordVisit(visit, role: config.localRole, arrivalUnknown: arrivalUnknown, now: .now)
+        if let matched = try? locationStore.recomputeMatches(pairID: config.pairID, now: .now) {
+            locationMatchedSessions = matched.matchedSessions
+        }
+        scheduleLocationSync(delay: .seconds(1))
+    }
+
+    private func handleCapturedPoint(_ point: LocationPointSample) {
+        guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled else { return }
+        _ = try? locationStore.recordPoint(point, role: config.localRole, now: .now)
+        if let matched = try? locationStore.recomputeMatches(pairID: config.pairID, now: .now) {
+            locationMatchedSessions = matched.matchedSessions
+        }
+        scheduleLocationSync(delay: .seconds(1))
+    }
+
+    private func scheduleLocationSync(delay: Duration) {
+        scheduledSyncTask?.cancel()
+        scheduledSyncTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.syncLocationNow(requestFreshFix: false)
+        }
+    }
 
     func export(_ format: LogExport.Format) -> LogExport {
         LogExport(engine: engine, format: format)

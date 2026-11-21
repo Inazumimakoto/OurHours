@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "foam_day_puff_a.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

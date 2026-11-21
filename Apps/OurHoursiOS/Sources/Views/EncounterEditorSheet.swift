@@ -1,5 +1,5 @@
-import SwiftUI
 import OurHoursCore
+import SwiftUI
 
 enum EncounterEditorMode: Identifiable {
     case add(Date), edit(ResolvedEncounter), complete(ResolvedEncounter)
@@ -44,13 +44,22 @@ struct EncounterEditorSheet: View {
             Form {
                 if case .complete = mode {
                     LabeledContent("開始", value: start.formatted(date: .abbreviated, time: .standard))
-                } else { DatePicker("開始", selection: $start) }
+                } else {
+                    DatePicker("開始", selection: $start)
+                }
                 DatePicker("終了", selection: $end)
-                if end <= start { Text("終了時刻は開始時刻より後に設定してください。").foregroundStyle(.red) }
-                if let error = model.journalError { Text(error).foregroundStyle(.red) }
+                if end <= start {
+                    Text("終了時刻は開始時刻より後に設定してください。")
+                        .font(FoamFont.medium(14))
+                        .foregroundStyle(.red)
+                }
+                if let error = model.journalError {
+                    Text(error).font(FoamFont.regular(14)).foregroundStyle(.red)
+                }
                 switch mode {
                 case let .edit(record), let .complete(record):
                     Button("記録を削除", role: .destructive) { confirmDeletion = true }
+                        .font(FoamFont.bold(16))
                         .confirmationDialog("この記録を削除しますか？", isPresented: $confirmDeletion, titleVisibility: .visible) {
                             Button("削除", role: .destructive) {
                                 model.deleteResolvedEncounter(record)
@@ -61,14 +70,20 @@ struct EncounterEditorSheet: View {
                     EmptyView()
                 }
             }
+            .font(FoamFont.medium(16))
             .navigationTitle(mode.title)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル") { dismiss() }.font(FoamFont.medium(16))
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { save() }.disabled(end <= start)
+                    Button("保存") { save() }
+                        .font(FoamFont.bold(16))
+                        .disabled(end <= start)
                 }
             }
-        }.fontDesign(.rounded)
+        }
+        .font(FoamFont.medium(16))
     }
 
     private func save() {

@@ -1,3 +1,4 @@
+import CoreBluetooth
 import Foundation
 import Synchronization
 import Testing
@@ -129,5 +130,53 @@ struct OurHoursBLEEngineTests {
         #expect(!retriedSnapshot.isPaired)
         #expect(retriedSnapshot.pairConfiguration == nil)
         #expect(try configStore.loadPairConfiguration() == nil)
+    }
+
+    @Test func bleTimingAndAuthCooldownClassification() throws {
+        #expect(BLEConstants.authTimeoutSeconds < 10)
+        #expect(BLEConstants.authTimeoutSeconds == 6)
+        #expect(BLEConstants.knownPeerAuthFailureCooldownSeconds == 15)
+
+        let invalidHandle = NSError(domain: CBATTErrorDomain, code: CBATTError.invalidHandle.rawValue)
+        let otherATT = NSError(domain: CBATTErrorDomain, code: CBATTError.readNotPermitted.rawValue)
+        let genericError = NSError(domain: "OurHoursTest", code: 1)
+        #expect(OurHoursBLEEngine.isInvalidHandleError(invalidHandle))
+        #expect(!OurHoursBLEEngine.isInvalidHandleError(otherATT))
+        #expect(!OurHoursBLEEngine.isInvalidHandleError(genericError))
+
+        let knownID = UUID()
+        let unknownID = UUID()
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.expired) == 15)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: invalidHandle) == 15)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: genericError) == 15)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.invalidTag) == 300)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.wrongKeyEpoch) == 300)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: unknownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.expired) == 300)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: unknownID, lastAuthenticatedPeripheralID: nil, error: invalidHandle) == 300)
+    }
+
+    @Test func foregroundActivationRunsSafelyForUnpairedAndPairedEngines() throws {
+        let suite = "OurHoursCoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let configStore = PairConfigStore(secretStorage: InMemorySecretStorage(), userDefaults: defaults)
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let logStore = EncounterLogStore(directory: directory)
+        let engine = OurHoursBLEEngine(configStore: configStore, logStore: logStore, enableStateRestoration: false)
+
+        engine.handleForegroundActivation()
+        #expect(!engine.currentSnapshot().isPaired)
+
+        let (configuration, _) = PairingPayloadCodec.makePairingBundle()
+        engine.configurePair(configuration)
+        engine.handleForegroundActivation()
+        #expect(engine.currentSnapshot().isPaired)
+        #expect(engine.currentSnapshot().recentEvents.contains { $0.kind == "foregroundRefresh" })
+
+        engine.handleBackgroundWake(source: "locationVisit")
+        #expect(engine.currentSnapshot().recentEvents.contains {
+            $0.kind == "backgroundWake" && $0.metadata["source"] == "locationVisit"
+        })
     }
 }

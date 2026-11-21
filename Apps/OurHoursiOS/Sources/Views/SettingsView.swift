@@ -10,12 +10,61 @@ struct SettingsView: View {
     var body: some View {
         let state = model.snapshot
         Form {
-            Section("記録") {
+            Section {
                 Toggle("自動記録", isOn: Binding(
                     get: { model.isAutoRecordingEnabled }, set: { model.setAutoRecordingEnabled($0) }
                 ))
+            } header: {
+                Text("記録").font(FoamFont.bold(13, relativeTo: .footnote))
             }
-            Section("ペア設定") {
+            Section {
+                Toggle("位置情報で取りこぼしを補完", isOn: Binding(
+                    get: { model.locationMonitor.isEnabled },
+                    set: { enabled in
+                        if enabled {
+                            model.locationMonitor.enableAndRequestAuthorization()
+                            Task { await model.syncLocationNow(requestFreshFix: true) }
+                        } else {
+                            model.locationMonitor.disable()
+                        }
+                    }
+                ))
+                LabeledContent("取得状態") {
+                    Text(model.locationMonitor.statusDescription)
+                        .font(FoamFont.medium(13, relativeTo: .caption))
+                        .foregroundStyle(model.locationMonitor.isReducedAccuracyWarning ? .orange : .secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+                if let lastCapture = model.locationMonitor.lastCaptureDate {
+                    LabeledContent("直近の位置取得", value: lastCapture.formatted())
+                }
+                LabeledContent("CloudKit 同期") {
+                    Text(model.locationSyncStatusText)
+                        .font(FoamFont.medium(13, relativeTo: .caption))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("位置補完で一致", value: "\(model.locationMatchedSessions.count)件")
+                Button("今すぐ位置情報を同期・突き合わせ") {
+                    Task { await model.syncLocationNow(requestFreshFix: true) }
+                }
+                .font(FoamFont.bold(15))
+                .disabled(model.isLocationSyncing || !model.snapshot.isPaired || !model.locationMonitor.isEnabled)
+                Text("ペアの共有鍵で暗号化した滞在ログだけを CloudKit 経由で突き合わせ、Bluetooth が切れた時間帯を自動補完します。地図や座標の画面共有は行わず、生の座標は 14 日で自動削除されます。")
+                    .font(FoamFont.regular(12.5, relativeTo: .footnote))
+                    .foregroundStyle(.secondary)
+                if model.locationMonitor.needsSettingsGuidance {
+                    Button("設定で「常に」＋「正確な位置情報オン」を確認") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(url)
+                        }
+                    }
+                    .font(FoamFont.bold(14))
+                }
+            } header: {
+                Text("位置情報による取りこぼし補完（正確な位置 × CloudKit）").font(FoamFont.bold(13, relativeTo: .footnote))
+            }
+            Section {
                 if let pair = model.snapshot.pairConfiguration {
                     LabeledContent("ペアID", value: String(pair.pairID.uuidString.prefix(8)))
                     LabeledContent("この端末の役割", value: pair.localRole.shortCode)
@@ -23,8 +72,10 @@ struct SettingsView: View {
                     LabeledContent("設定日時", value: pair.createdAt.formatted())
                     if pair.localRole == .partnerA {
                         Button("招待QRコードを表示") { showPairing = true }
+                            .font(FoamFont.bold(16))
                     }
                     Button("ペア連携を解除（機種変更・再設定）", role: .destructive) { confirmUnpair = true }
+                        .font(FoamFont.bold(16))
                         .confirmationDialog("ペア連携を解除しますか？", isPresented: $confirmUnpair, titleVisibility: .visible) {
                             Button("解除する", role: .destructive) { model.unpair() }
                             Button("キャンセル", role: .cancel) {}
@@ -34,9 +85,12 @@ struct SettingsView: View {
                 } else {
                     Text("未設定")
                     Button("ペアを設定する") { showPairing = true }
+                        .font(FoamFont.bold(16))
                 }
+            } header: {
+                Text("ペア設定").font(FoamFont.bold(13, relativeTo: .footnote))
             }
-            Section("Bluetooth") {
+            Section {
                 LabeledContent("Central", value: state.centralState)
                 LabeledContent("Peripheral", value: state.peripheralState)
                 HStack {
@@ -62,19 +116,26 @@ struct SettingsView: View {
                             openURL(url)
                         }
                     }
+                    .font(FoamFont.bold(16))
                 }
+            } header: {
+                Text("Bluetooth").font(FoamFont.bold(13, relativeTo: .footnote))
             }
-            Section("診断") {
+            Section {
                 NavigationLink("BLE 診断ログ・書き出し") { LogsView() }
                 Button("デバッグログを消去", role: .destructive) { confirmClear = true }
+                    .font(FoamFont.bold(16))
                     .confirmationDialog("この端末のログを消去しますか？", isPresented: $confirmClear, titleVisibility: .visible) {
                         Button("消去する", role: .destructive) { model.clearLogs() }
                         Button("キャンセル", role: .cancel) {}
                     } message: {
                         Text("記録中の区間を含め、保存した記録区間と診断イベントをすべて消去します。この操作は取り消せません。")
                     }
+            } header: {
+                Text("診断").font(FoamFont.bold(13, relativeTo: .footnote))
             }
         }
+        .font(FoamFont.medium(16))
         .navigationTitle("設定")
         .sheet(isPresented: $showPairing) { PairingView() }
     }
@@ -84,8 +145,10 @@ private struct StatusBadge: View {
     let title: String
     let active: Bool
     var body: some View {
-        Text(title).font(.caption.bold())
-            .padding(.horizontal, 8).padding(.vertical, 4)
+        Text(title)
+            .font(FoamFont.bold(12, relativeTo: .caption))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .background(active ? Color.green.opacity(0.18) : Color.secondary.opacity(0.12), in: Capsule())
     }
 }

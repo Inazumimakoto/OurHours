@@ -28,10 +28,11 @@ private struct FoamCharacter: View {
 
     var body: some View {
         Button {
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             bounce += 1
             onTap()
         } label: {
-            TimelineView(.animation(minimumInterval: 1 / 120, paused: reduceMotion)) { timeline in
+            TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let wave = sin(t * (index == 0 ? 1.15 : 0.98) + Double(index))
                 let blink = (t + Double(index)).truncatingRemainder(dividingBy: 4.7) < 0.13

@@ -1,12 +1,45 @@
 import SwiftUI
+import UIKit
+
+enum FoamFont {
+    static let regularName = "ZenMaruGothic-Regular"
+    static let mediumName = "ZenMaruGothic-Medium"
+    static let boldName = "ZenMaruGothic-Bold"
+
+    static func regular(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom(regularName, size: size, relativeTo: style)
+    }
+
+    static func medium(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom(mediumName, size: size, relativeTo: style)
+    }
+
+    static func bold(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom(boldName, size: size, relativeTo: style)
+    }
+
+    static func uiRegular(_ size: CGFloat) -> UIFont {
+        UIFont(name: regularName, size: size) ?? .systemFont(ofSize: size, weight: .regular)
+    }
+
+    static func uiMedium(_ size: CGFloat) -> UIFont {
+        UIFont(name: mediumName, size: size) ?? .systemFont(ofSize: size, weight: .medium)
+    }
+
+    static func uiBold(_ size: CGFloat) -> UIFont {
+        UIFont(name: boldName, size: size) ?? .systemFont(ofSize: size, weight: .bold)
+    }
+}
 
 enum FoamTheme {
     static let ink = Color(red: 0.14, green: 0.16, blue: 0.28)
-    static let cream = Color(red: 1, green: 0.93, blue: 0.75)
+    static let cream = Color(red: 1.0, green: 0.93, blue: 0.75)
+    static let warmAccent = Color(red: 0.58, green: 0.35, blue: 0.10)
+
     static func sky(together: Bool) -> LinearGradient {
         let colors = together
-            ? [Color(red: 1, green: 0.894, blue: 0.812), Color(red: 0.988, green: 0.91, blue: 0.847), Color(red: 0.973, green: 0.91, blue: 0.949)]
-            : [Color(red: 0.729, green: 0.796, blue: 1), Color(red: 0.808, green: 0.843, blue: 0.98), Color(red: 0.875, green: 0.847, blue: 0.98)]
+            ? [Color(red: 1.0, green: 0.894, blue: 0.812), Color(red: 0.988, green: 0.91, blue: 0.847), Color(red: 0.973, green: 0.91, blue: 0.949)]
+            : [Color(red: 0.729, green: 0.796, blue: 1.0), Color(red: 0.808, green: 0.843, blue: 0.98), Color(red: 0.875, green: 0.847, blue: 0.98)]
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
@@ -21,10 +54,45 @@ enum FoamTheme {
     }
 }
 
+/// Continuous whipped soap-lather cloud pillow (no glass, no rectangular border, no hollow bubble gaps).
+struct FoamCloudSurface: View {
+    var isTogether: Bool = false
+    var compact: Bool = false
+
+    var body: some View {
+        Image(compact ? "FoamPillLather" : "FoamCardLather")
+            .resizable()
+            .padding(.horizontal, compact ? -14 : -18)
+            .padding(.vertical, compact ? -10 : -14)
+            .shadow(
+                color: isTogether ? FoamTheme.warmAccent.opacity(0.10) : FoamTheme.ink.opacity(0.08),
+                radius: compact ? 6 : 9,
+                y: compact ? 3 : 4
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct FoamPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.65), value: configuration.isPressed)
+    }
+}
+
 extension View {
-    func foamPill() -> some View {
-        padding(.horizontal, 18).padding(.vertical, 10)
-            .background(.white.opacity(0.55), in: Capsule())
-            .overlay { Capsule().strokeBorder(.white.opacity(0.7)) }
+    func foamCloudSurface(isTogether: Bool = false, compact: Bool = false) -> some View {
+        padding(.horizontal, compact ? 22 : 26)
+            .padding(.vertical, compact ? 12 : 16)
+            .background { FoamCloudSurface(isTogether: isTogether, compact: compact) }
+    }
+
+    func foamButtonSurface() -> some View {
+        padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background { FoamCloudSurface(isTogether: false, compact: true) }
+            .buttonStyle(FoamPressButtonStyle())
     }
 }

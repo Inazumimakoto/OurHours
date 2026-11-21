@@ -1,6 +1,6 @@
-import SwiftUI
 import CoreBluetooth
 import OurHoursCore
+import SwiftUI
 
 struct HomeView: View {
     @Environment(AppModel.self) private var model
@@ -15,11 +15,19 @@ struct HomeView: View {
             if let start = model.activeSessionStartDate {
                 TimelineView(.periodic(from: .now, by: 1)) { tick in
                     let s = max(0, Int(tick.date.timeIntervalSince(start)))
-                    VStack {
-                        Text(s < 3600 ? String(format: "%d:%02d", s / 60, s % 60) : String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60))
-                            .font(.system(size: 74, weight: .heavy, design: .rounded)).monospacedDigit()
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                        Text("いっしょにいるよ").font(.subheadline.bold()).foamPill()
+                    VStack(spacing: 10) {
+                        Text(
+                            s < 3600
+                                ? String(format: "%d:%02d", s / 60, s % 60)
+                                : String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                        )
+                        .font(FoamFont.bold(72, relativeTo: .largeTitle))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.68)
+                        Text("いっしょにいるよ")
+                            .font(FoamFont.bold(15, relativeTo: .subheadline))
+                            .foamCloudSurface(isTogether: true, compact: true)
                     }
                 }
             }
@@ -27,28 +35,40 @@ struct HomeView: View {
             FoamMascotView(isTogether: model.isTogetherNow, onTapBurst: onBurst)
             Spacer()
             if !model.isTogetherNow {
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     if !model.snapshot.isPaired {
                         Button("ペアを設定してはじめる", action: onPair)
+                            .font(FoamFont.bold(16))
+                            .foamButtonSurface()
                     } else {
                         Text("今月 \(model.metDayCount(forMonth: .now))日 · \(FoamTheme.duration(model.monthlyRecordedSeconds(forMonth: .now)))")
+                            .font(FoamFont.bold(16))
                         Text("累計 \(FoamTheme.duration(model.lifetimeRecordedSeconds()))")
-                            .font(.caption.bold())
-                            .foregroundStyle(FoamTheme.ink.opacity(0.72))
+                            .font(FoamFont.medium(13, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.76))
                     }
-                    if CBManager.authorization == .denied || CBManager.authorization == .restricted || model.snapshot.centralState == "unauthorized" || model.snapshot.peripheralState == "unauthorized" {
+                    if CBManager.authorization == .denied || CBManager.authorization == .restricted
+                        || model.snapshot.centralState == "unauthorized" || model.snapshot.peripheralState == "unauthorized" {
                         Label("自動記録にはBluetoothの許可が必要です", systemImage: "exclamationmark.triangle")
+                            .font(FoamFont.bold(13))
                         Button("設定を開く") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                         }
+                        .font(FoamFont.bold(14))
+                        .foamButtonSurface()
                     }
                     if let pending = model.resolvedEncounters.last(where: { $0.status == .unknownEnd }) {
                         Button { onCalendar(pending.startedAt) } label: {
                             Label("終了不明の記録を確認", systemImage: "exclamationmark.circle")
                         }
+                        .font(FoamFont.bold(14))
+                        .foamButtonSurface()
                     }
-                    if let error = model.journalError { Text(error).font(.caption) }
-                }.font(.subheadline.bold()).foamPill()
+                    if let error = model.journalError {
+                        Text(error).font(FoamFont.regular(12, relativeTo: .caption))
+                    }
+                }
+                .foamCloudSurface(isTogether: false)
             }
         }.padding(.horizontal)
     }
