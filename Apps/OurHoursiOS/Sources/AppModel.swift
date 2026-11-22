@@ -23,22 +23,87 @@ protocol LocationMonitoring {
 
 extension LocationPresenceMonitor: LocationMonitoring {}
 
+struct MediaTransferProgress: Equatable, Sendable {
+    enum Phase: Equatable, Sendable {
+        case importing
+        case uploading
+        case downloading
+    }
+
+    let phase: Phase
+    let completedCount: Int
+    let totalCount: Int
+    let currentItemFraction: Double
+    let detailText: String
+
+    var overallFraction: Double {
+        guard totalCount > 0 else { return 0 }
+        let raw = (Double(completedCount) + min(1.0, max(0.0, currentItemFraction))) / Double(totalCount)
+        return min(1.0, max(0.0, raw))
+    }
+}
+
+struct BubbleUnlockBanner: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let items: [BubbleUnlockItem]
+
+    var primaryCategory: BubbleCustomizationCategory {
+        items.first?.category ?? .expression
+    }
+
+    var title: String {
+        if items.count == 1, let first = items.first {
+            return "「\(first.title)」をアンロック！"
+        }
+        return "\(items.count)個のアイテムをアンロック！"
+    }
+
+    var subtitle: String {
+        let previewNames = items.prefix(3).map(\.title).joined(separator: "・")
+        let suffix = items.count > 3 ? " ほか" : ""
+        let requirementText = items.first?.requirement.requirementLabel ?? ""
+        if requirementText.isEmpty {
+            return "\(previewNames)\(suffix)"
+        }
+        return "\(requirementText)達成 · \(previewNames)\(suffix)"
+    }
+}
+
 @MainActor @Observable
 final class AppModel {
     enum DefaultsKey {
         static let onboarding = "ourhours.hasCompletedOnboarding"
         static let color = "ourhours.localBubbleColor"
+        static let expression = "ourhours.localBubbleExpression"
+        static let expressionRotation = "ourhours.localBubbleExpressionRotation"
+        static let decorations = "ourhours.localBubbleDecorations"
+        static let partnerDisplayOverride = "ourhours.partnerBubbleDisplayOverride"
+        static let discoveredSecretPop = "ourhours.discoveredSecretPop"
+        static let achievedBubbleEvents = "ourhours.achievedBubbleEvents"
+        static let seenUnlockedItems = "ourhours.seenBubbleUnlockIDs"
+        static let unseenUnlockedItems = "ourhours.unseenBubbleUnlockIDs"
         static let birthday = "ourhours.localBirthday"
         static let nickname = "ourhours.partnerNickname"
         static let anniversaryMarkStyle = "ourhours.anniversaryMarkStyle"
         static let myBirthdayMarkStyle = "ourhours.myBirthdayMarkStyle"
         static let partnerBirthdayMarkStyle = "ourhours.partnerBirthdayMarkStyle"
+        static let avatarAssetID = "ourhours.localAvatarAssetID"
     }
 
     private let userDefaults: UserDefaults
     private(set) var hasCompletedOnboarding: Bool
     private(set) var localBubbleColor: BubbleColorTheme
+    private(set) var localBubbleExpression: BubbleExpression
+    private(set) var localBubbleExpressionRotation: [BubbleExpression]
+    private(set) var localBubbleDecorations: BubbleDecorationLoadout
+    private(set) var partnerDisplayOverride: PartnerBubbleDisplayOverride
+    private(set) var hasDiscoveredSecretPop: Bool
+    private(set) var achievedBubbleEvents: Set<BubbleEventKind>
+    private(set) var seenUnlockedItemIDs: Set<String>
+    private(set) var unseenUnlockedItemIDs: Set<String>
+    private(set) var activeUnlockBanner: BubbleUnlockBanner?
     private(set) var localBirthday: CalendarDateValue?
+    private(set) var localAvatarAssetID: UUID?
     private(set) var partnerNickname: String
     private(set) var anniversaryMarkStyle: AnniversaryMarkStyle
     private(set) var myBirthdayMarkStyle: BirthdayMarkStyle
@@ -53,10 +118,13 @@ final class AppModel {
     @ObservationIgnored private var pendingExternalShareMetadata: CKShare.Metadata?
     @ObservationIgnored private var scheduledSyncTask: Task<Void, Never>?
     @ObservationIgnored private var scheduledHistorySyncTask: Task<Void, Never>?
+    @ObservationIgnored private var scheduledAssetSyncTask: Task<Void, Never>?
+    @ObservationIgnored private var secretPopUnlockTask: Task<Void, Never>?
     @ObservationIgnored private var pairSpaceSetupTask: Task<PairSpaceContext?, Never>?
     @ObservationIgnored private var pairSpaceResetTask: Task<Void, Never>?
     @ObservationIgnored private var historySyncTask: Task<HistorySyncOutcome?, Never>?
     @ObservationIgnored private var locationSyncTask: Task<LocationSyncOutcome?, Never>?
+    @ObservationIgnored private var assetSyncTask: Task<Void, Never>?
     @ObservationIgnored private var pairGeneration = 0
     @ObservationIgnored private var historyInputRevision = 0
     @ObservationIgnored private var locationInputRevision = 0
@@ -70,6 +138,26 @@ final class AppModel {
     private(set) var journal = JournalSnapshot()
     var journalError: String?
 
+    private let assetStore: PairAssetStore
+    @ObservationIgnored private let imageCache = NSCache<NSString, UIImage>()
+    private(set) var assetRevision = 0
+    private(set) var mediaImportProgress: MediaTransferProgress?
+    private(set) var assetUploadProgress: MediaTransferProgress?
+    private(set) var assetDownloadProgress: MediaTransferProgress?
+    private(set) var uploadingMediaIDs: Set<UUID> = []
+
+    var activeMediaProgress: MediaTransferProgress? {
+        mediaImportProgress ?? assetUploadProgress ?? assetDownloadProgress
+    }
+
+    func isMediaUploading(id: UUID) -> Bool {
+        uploadingMediaIDs.contains(id)
+    }
+
+    func setMediaImportProgress(_ progress: MediaTransferProgress?) {
+        mediaImportProgress = progress
+    }
+
     private let peerSyncStore: PartnerSyncStore
     private let historySync: CloudKitHistorySync
     private(set) var peerSessions: [SyncedPeerSession] = []
@@ -78,8 +166,12 @@ final class AppModel {
     private let locationStore: LocationTimelineStore
     private let locationSync: CloudKitLocationSync
     #if DEBUG
-    private let isScreenshotDemo: Bool
-    var screenshotFixedActiveSessionStart: Date?
+    private let isSandboxDemo: Bool
+    var debugSimulatedActiveSessionStart: Date?
+    var debugUnlockAllBubbleItems = false
+    var debugBonusHours: Double = 0
+    var debugBonusDays: Int = 0
+    var debugSimulatedEvents: Set<BubbleEventKind> = []
     #endif
     let locationMonitor: any LocationMonitoring
     private(set) var locationMatchedSessions: [LocationMatchedSession] = []
@@ -93,10 +185,11 @@ final class AppModel {
         locationStore: LocationTimelineStore = LocationTimelineStore(),
         locationSync: CloudKitLocationSync = CloudKitLocationSync(),
         locationMonitor: (any LocationMonitoring)? = nil,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        assetStore: PairAssetStore = PairAssetStore()
     ) {
         #if DEBUG
-        isScreenshotDemo = locationMonitor is ScreenshotLocationMonitor
+        isSandboxDemo = locationMonitor is ScreenshotLocationMonitor
         #endif
         self.userDefaults = userDefaults
         let initialSnapshot = engine.currentSnapshot()
@@ -109,9 +202,29 @@ final class AppModel {
             userDefaults.set(completed, forKey: DefaultsKey.onboarding)
         }
         localBubbleColor = userDefaults.string(forKey: DefaultsKey.color).flatMap(BubbleColorTheme.init(rawValue:)) ?? .skyBlue
+        localBubbleExpression = userDefaults.string(forKey: DefaultsKey.expression)
+            .flatMap(BubbleExpression.init(rawValue:)) ?? .classic
+        localBubbleExpressionRotation = (userDefaults.stringArray(forKey: DefaultsKey.expressionRotation) ?? [])
+            .compactMap(BubbleExpression.init(rawValue:))
+        localBubbleDecorations = userDefaults.data(forKey: DefaultsKey.decorations).flatMap {
+            try? JSONDecoder().decode(BubbleDecorationLoadout.self, from: $0)
+        } ?? .none
+        partnerDisplayOverride = userDefaults.data(forKey: DefaultsKey.partnerDisplayOverride).flatMap {
+            try? JSONDecoder().decode(PartnerBubbleDisplayOverride.self, from: $0)
+        } ?? .none
+        hasDiscoveredSecretPop = userDefaults.bool(forKey: DefaultsKey.discoveredSecretPop)
+        achievedBubbleEvents = Set(
+            (userDefaults.stringArray(forKey: DefaultsKey.achievedBubbleEvents) ?? [])
+                .compactMap(BubbleEventKind.init(rawValue:))
+        )
+        var initialSeenIDs = Set(userDefaults.stringArray(forKey: DefaultsKey.seenUnlockedItems) ?? [])
+        initialSeenIDs.formUnion(BubbleUnlockCatalog.starterItemIDs)
+        seenUnlockedItemIDs = initialSeenIDs
+        unseenUnlockedItemIDs = Set(userDefaults.stringArray(forKey: DefaultsKey.unseenUnlockedItems) ?? [])
         localBirthday = userDefaults.data(forKey: DefaultsKey.birthday).flatMap {
             try? JSONDecoder().decode(CalendarDateValue.self, from: $0)
         }
+        localAvatarAssetID = userDefaults.string(forKey: DefaultsKey.avatarAssetID).flatMap(UUID.init(uuidString:))
         partnerNickname = userDefaults.string(forKey: DefaultsKey.nickname) ?? ""
         anniversaryMarkStyle = userDefaults.string(forKey: DefaultsKey.anniversaryMarkStyle)
             .flatMap(AnniversaryMarkStyle.init(rawValue:)) ?? .heart
@@ -121,6 +234,9 @@ final class AppModel {
             .flatMap(BirthdayMarkStyle.init(rawValue:)) ?? .cake
         self.engine = engine
         self.journalStore = journalStore
+        self.assetStore = assetStore
+        self.imageCache.countLimit = 80
+        self.imageCache.totalCostLimit = 60 * 1024 * 1024
         self.peerSyncStore = peerSyncStore
         self.historySync = historySync
         self.locationStore = locationStore
@@ -143,8 +259,18 @@ final class AppModel {
                 journal = try journalStore.prepareForPairTransition(from: nil, to: pair.pairID)
                 if journal.profile(for: pair.localRole) == nil {
                     journal = try journalStore.setRoleProfile(
-                        role: pair.localRole, bubbleColor: localBubbleColor, birthday: localBirthday
+                        role: pair.localRole,
+                        bubbleColor: localBubbleColor,
+                        birthday: localBirthday,
+                        avatarAssetID: localAvatarAssetID,
+                        expression: localBubbleExpression,
+                        expressionRotationPool: localBubbleExpressionRotation,
+                        decorations: localBubbleDecorations
                     )
+                } else if localAvatarAssetID == nil,
+                          let existingAvatar = journal.profile(for: pair.localRole)?.avatarAssetID {
+                    localAvatarAssetID = existingAvatar
+                    userDefaults.set(existingAvatar.uuidString, forKey: DefaultsKey.avatarAssetID)
                 }
             } else {
                 journal = try journalStore.load()
@@ -169,12 +295,15 @@ final class AppModel {
         }
 
         #if DEBUG
-        if isScreenshotDemo {
+        if isSandboxDemo {
+            evaluateBubbleUnlocks(allowNotification: false)
+            unseenUnlockedItemIDs.removeAll()
             pairSpaceStatus = .connected(scope: .privateDB, shareURL: initialSnapshot.pairConfiguration?.cloudShareURL, sameAppleID: false)
             historySyncState = .synced(.now, peerSessions: 0)
             return
         }
         #endif
+        evaluateBubbleUnlocks(allowNotification: false)
         let snapshots = engine.snapshotStream()
         subscription = Task { [weak self] in
             for await publishedSnapshot in snapshots {
@@ -187,6 +316,7 @@ final class AppModel {
                 self.refreshPermissionStates()
                 if nextNonActive != previousNonActive {
                     self.historyInputRevision += 1
+                    self.evaluateBubbleUnlocks(allowNotification: true)
                     if value.isPaired {
                         self.scheduleHistorySync(delay: .seconds(1.5))
                     }
@@ -206,6 +336,9 @@ final class AppModel {
         accountChangeTask?.cancel()
         scheduledSyncTask?.cancel()
         scheduledHistorySyncTask?.cancel()
+        scheduledAssetSyncTask?.cancel()
+        secretPopUnlockTask?.cancel()
+        assetSyncTask?.cancel()
     }
 
     private var partnerProfile: SyncedRoleProfile? {
@@ -214,8 +347,276 @@ final class AppModel {
     }
 
     var partnerBubbleColor: BubbleColorTheme? { partnerProfile?.bubbleColor }
+    var partnerBubbleExpression: BubbleExpression { partnerProfile?.expression ?? .classic }
+    var partnerBubbleExpressionRotation: [BubbleExpression] { partnerProfile?.expressionRotationPool ?? [] }
+    var partnerBubbleDecorations: BubbleDecorationLoadout { partnerProfile?.decorations ?? .none }
+    var effectivePartnerBubbleColor: BubbleColorTheme? { partnerDisplayOverride.color ?? partnerBubbleColor }
+    var effectivePartnerBubbleExpression: BubbleExpression { partnerDisplayOverride.expression ?? partnerBubbleExpression }
+    var effectivePartnerBubbleExpressionRotation: [BubbleExpression] {
+        partnerDisplayOverride.expressionRotationPool ?? partnerBubbleExpressionRotation
+    }
+    var effectivePartnerBubbleDecorations: BubbleDecorationLoadout { partnerDisplayOverride.decorations ?? partnerBubbleDecorations }
     var partnerBirthday: CalendarDateValue? { partnerProfile?.birthday }
+    var partnerAvatarAssetID: UUID? { partnerProfile?.avatarAssetID }
+    var localAvatarImage: UIImage? { localAvatarAssetID.flatMap { cachedOrLoadedImage(kind: .avatar, id: $0) } }
+    var partnerAvatarImage: UIImage? { partnerAvatarAssetID.flatMap { cachedOrLoadedImage(kind: .avatar, id: $0) } }
     var anniversaryDate: CalendarDateValue? { journal.anniversary?.date }
+
+    func avatarImage(for role: PeerRole?) -> UIImage? {
+        guard let role else { return nil }
+        if role == snapshot.pairConfiguration?.localRole { return localAvatarImage }
+        if role == snapshot.pairConfiguration?.localRole.opposite { return partnerAvatarImage }
+        return journal.profile(for: role)?.avatarAssetID.flatMap { cachedOrLoadedImage(kind: .avatar, id: $0) }
+    }
+
+    func dayPhotoImage(id: UUID) -> UIImage? {
+        cachedOrLoadedImage(kind: .dayPhoto, id: id)
+    }
+
+    func dayMediaThumbnail(for item: DayPhotoAttachment) -> UIImage? {
+        dayPhotoImage(id: item.thumbnailAssetID ?? item.id)
+    }
+
+    func dayVideoURL(id: UUID) -> URL? {
+        _ = assetRevision
+        guard assetStore.exists(kind: .dayVideo, id: id) else {
+            if snapshot.isPaired {
+                scheduleAssetSync(delay: .milliseconds(50))
+            }
+            return nil
+        }
+        return assetStore.fileURL(kind: .dayVideo, id: id)
+    }
+
+    func mediaAttachment(id: UUID) -> DayPhotoAttachment? {
+        let pairID = snapshot.pairConfiguration?.pairID
+        return journal.dayPhotos.first { item in
+            item.id == id && (pairID == nil || item.pairID == nil || item.pairID == pairID)
+        }
+    }
+
+    private func cachedOrLoadedImage(kind: PairAssetKind, id: UUID) -> UIImage? {
+        _ = assetRevision
+        let key = "\(kind.rawValue):\(id.uuidString)" as NSString
+        if let cached = imageCache.object(forKey: key) { return cached }
+        guard let data = assetStore.loadData(kind: kind, id: id),
+              let image = UIImage(data: data) else { return nil }
+        imageCache.setObject(image, forKey: key)
+        return image
+    }
+
+    func localMemoText(forDayKey dayKey: String) -> String {
+        let pairID = snapshot.pairConfiguration?.pairID
+        if let localRole = snapshot.pairConfiguration?.localRole {
+            let roleKey = DailyMemo.roleMemoKey(dayKey: dayKey, role: localRole)
+            if let roleMemo = journal.roleDailyMemos[roleKey],
+               pairID == nil || roleMemo.pairID == nil || roleMemo.pairID == pairID {
+                return roleMemo.text
+            }
+            if journal.deletedRoleMemoKeys[roleKey] != nil {
+                return ""
+            }
+            if let legacy = journal.dailyMemos[dayKey],
+               pairID == nil || legacy.pairID == nil || legacy.pairID == pairID,
+               legacy.authorRole == nil || legacy.authorRole == localRole {
+                return legacy.text
+            }
+            return ""
+        }
+        if let legacy = journal.dailyMemos[dayKey],
+           pairID == nil || legacy.pairID == nil || legacy.pairID == pairID {
+            return legacy.text
+        }
+        return ""
+    }
+
+    func partnerMemoText(forDayKey dayKey: String) -> String? {
+        guard let pair = snapshot.pairConfiguration else { return nil }
+        let partnerRole = pair.localRole.opposite
+        let roleKey = DailyMemo.roleMemoKey(dayKey: dayKey, role: partnerRole)
+        if let roleMemo = journal.roleDailyMemos[roleKey],
+           roleMemo.pairID == nil || roleMemo.pairID == pair.pairID {
+            let trimmed = roleMemo.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : roleMemo.text
+        }
+        if journal.deletedRoleMemoKeys[roleKey] != nil {
+            return nil
+        }
+        if let legacy = journal.dailyMemos[dayKey],
+           legacy.pairID == nil || legacy.pairID == pair.pairID,
+           legacy.authorRole == partnerRole {
+            let trimmed = legacy.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : legacy.text
+        }
+        return nil
+    }
+
+    func memo(forDayKey dayKey: String) -> DailyMemo? {
+        let pairID = snapshot.pairConfiguration?.pairID
+        let candidates = [
+            snapshot.pairConfiguration.map { journal.roleDailyMemos[DailyMemo.roleMemoKey(dayKey: dayKey, role: $0.localRole)] } ?? nil,
+            snapshot.pairConfiguration.map { journal.roleDailyMemos[DailyMemo.roleMemoKey(dayKey: dayKey, role: $0.localRole.opposite)] } ?? nil,
+            journal.dailyMemos[dayKey]
+        ].compactMap { memo -> DailyMemo? in
+            guard let memo, pairID == nil || memo.pairID == nil || memo.pairID == pairID else { return nil }
+            let trimmed = memo.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : memo
+        }
+        return candidates.max { $0.updatedAt < $1.updatedAt }
+    }
+
+    func photos(forDayKey dayKey: String) -> [DayPhotoAttachment] {
+        let pairID = snapshot.pairConfiguration?.pairID
+        return journal.dayPhotos
+            .filter { photo in
+                photo.dayKey == dayKey && (pairID == nil || photo.pairID == nil || photo.pairID == pairID)
+            }
+            .sorted {
+                let lhsDate = $0.capturedAt ?? $0.createdAt
+                let rhsDate = $1.capturedAt ?? $1.createdAt
+                return (lhsDate, $0.createdAt, $0.id.uuidString) < (rhsDate, $1.createdAt, $1.id.uuidString)
+            }
+    }
+
+    func placeTags(forDayKey dayKey: String) -> [DayPlaceTag] {
+        let pairID = snapshot.pairConfiguration?.pairID
+        return journal.dayPlaceTags
+            .filter { tag in
+                tag.dayKey == dayKey && (pairID == nil || tag.pairID == nil || tag.pairID == pairID)
+            }
+            .sorted {
+                ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString)
+            }
+    }
+
+    var allMediaAttachments: [DayPhotoAttachment] {
+        let pairID = snapshot.pairConfiguration?.pairID
+        return journal.dayPhotos
+            .filter { pairID == nil || $0.pairID == nil || $0.pairID == pairID }
+            .sorted { lhs, rhs in
+                if lhs.dayKey != rhs.dayKey { return lhs.dayKey > rhs.dayKey }
+                let lhsDate = lhs.capturedAt ?? lhs.createdAt
+                let rhsDate = rhs.capturedAt ?? rhs.createdAt
+                return (lhsDate, lhs.createdAt, lhs.id.uuidString) > (rhsDate, rhs.createdAt, rhs.id.uuidString)
+            }
+    }
+
+    func mediaAttachments(linkedToPlaceTagID tagID: UUID, onDayKey dayKey: String) -> [DayPhotoAttachment] {
+        photos(forDayKey: dayKey).filter { $0.placeTagID == tagID }
+    }
+
+    var allPlanEvents: [PairPlanEvent] {
+        let pairID = snapshot.pairConfiguration?.pairID
+        return journal.planEvents
+            .filter { pairID == nil || $0.pairID == nil || $0.pairID == pairID }
+            .sorted { lhs, rhs in
+                if lhs.startDayKey != rhs.startDayKey { return lhs.startDayKey > rhs.startDayKey }
+                if lhs.endDayKey != rhs.endDayKey { return lhs.endDayKey > rhs.endDayKey }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+    }
+
+    func planEvent(id: UUID) -> PairPlanEvent? {
+        allPlanEvents.first { $0.id == id }
+    }
+
+    func planEvents(forDayKey dayKey: String) -> [PairPlanEvent] {
+        allPlanEvents
+            .filter { $0.contains(dayKey: dayKey) }
+            .sorted { lhs, rhs in
+                if lhs.startDayKey != rhs.startDayKey { return lhs.startDayKey < rhs.startDayKey }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+    }
+
+    func planEvents(overlappingMonth monthDate: Date) -> [PairPlanEvent] {
+        let cal = CalendarDateValue.gregorianCurrent
+        let comps = cal.dateComponents([.year, .month], from: monthDate)
+        let monthKey = String(format: "%04d-%02d", comps.year ?? 0, comps.month ?? 0)
+        return allPlanEvents
+            .filter { $0.overlaps(monthKey: monthKey) }
+            .sorted { lhs, rhs in
+                if lhs.startDayKey != rhs.startDayKey { return lhs.startDayKey < rhs.startDayKey }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+    }
+
+    func upcomingPlanEvents(asOf date: Date = .now) -> [PairPlanEvent] {
+        let todayKey = EncounterCalendarAggregator.dayKey(for: date, calendar: CalendarDateValue.gregorianCurrent)
+        return allPlanEvents
+            .filter { $0.endDayKey >= todayKey }
+            .sorted { lhs, rhs in
+                if lhs.startDayKey != rhs.startDayKey { return lhs.startDayKey < rhs.startDayKey }
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+    }
+
+    func mediaAttachments(for plan: PairPlanEvent) -> [DayPhotoAttachment] {
+        PairPlanAlbumResolver.mediaAttachments(
+            for: plan,
+            in: journal.dayPhotos,
+            pairID: snapshot.pairConfiguration?.pairID
+        )
+    }
+
+    func placeTags(for plan: PairPlanEvent) -> [DayPlaceTag] {
+        PairPlanAlbumResolver.placeTags(
+            for: plan,
+            in: journal.dayPlaceTags,
+            pairID: snapshot.pairConfiguration?.pairID
+        )
+    }
+
+    func effectivePlan(for photo: DayPhotoAttachment) -> PairPlanEvent? {
+        PairPlanAlbumResolver.effectivePlan(for: photo, among: allPlanEvents)
+    }
+
+    func recordedSeconds(for plan: PairPlanEvent, asOf now: Date = .now) -> TimeInterval {
+        let cal = CalendarDateValue.gregorianCurrent
+        let startDayStart = cal.startOfDay(for: plan.startDate(calendar: cal))
+        let endDayStart = cal.startOfDay(for: plan.endDate(calendar: cal))
+        guard let rangeEnd = cal.date(byAdding: .day, value: 1, to: endDayStart),
+              rangeEnd > startDayStart else {
+            return 0
+        }
+        let targetInterval = DateInterval(start: startDayStart, end: rangeEnd)
+        let intervals: [DateInterval] = resolvedEncounters.compactMap { enc in
+            let endDate: Date? = switch enc.status {
+            case .completed: enc.endedAt
+            case .active: max(enc.startedAt, now)
+            case .unknownEnd: nil
+            }
+            guard let endDate, endDate > enc.startedAt else { return nil }
+            let clampedStart = max(enc.startedAt, targetInterval.start)
+            let clampedEnd = min(endDate, targetInterval.end)
+            guard clampedEnd > clampedStart else { return nil }
+            return DateInterval(start: clampedStart, end: clampedEnd)
+        }
+        guard !intervals.isEmpty else { return 0 }
+        let sorted = intervals.sorted { $0.start < $1.start }
+        var total: TimeInterval = 0
+        var curStart = sorted[0].start
+        var curEnd = sorted[0].end
+        for interval in sorted.dropFirst() {
+            if interval.start <= curEnd {
+                curEnd = max(curEnd, interval.end)
+            } else {
+                total += curEnd.timeIntervalSince(curStart)
+                curStart = interval.start
+                curEnd = interval.end
+            }
+        }
+        total += curEnd.timeIntervalSince(curStart)
+        return total
+    }
+
+    var memoryMapPins: [MemoryMapPin] {
+        MemoryMapPinBuilder.buildPins(from: journal, pairID: snapshot.pairConfiguration?.pairID)
+    }
 
     var daysTogetherCount: Int? {
         guard let anniversaryDate else { return nil }
@@ -265,17 +666,109 @@ final class AppModel {
         publishLocalProfile()
     }
 
+    func setLocalBubbleExpression(_ expression: BubbleExpression) {
+        localBubbleExpression = expression
+        userDefaults.set(expression.rawValue, forKey: DefaultsKey.expression)
+        publishLocalProfile()
+    }
+
+    func setLocalBubbleExpressionRotation(_ pool: [BubbleExpression]) {
+        var seen = Set<BubbleExpression>()
+        let deduplicated = pool.filter { seen.insert($0).inserted }
+        localBubbleExpressionRotation = deduplicated
+        userDefaults.set(deduplicated.map(\.rawValue), forKey: DefaultsKey.expressionRotation)
+        publishLocalProfile()
+    }
+
+    func setLocalBubbleDecorations(_ decorations: BubbleDecorationLoadout) {
+        localBubbleDecorations = decorations
+        if let encoded = try? JSONEncoder().encode(decorations) {
+            userDefaults.set(encoded, forKey: DefaultsKey.decorations)
+        }
+        publishLocalProfile()
+    }
+
+    func setPartnerDisplayOverride(_ override: PartnerBubbleDisplayOverride) {
+        partnerDisplayOverride = override
+        if override.isEmpty {
+            userDefaults.removeObject(forKey: DefaultsKey.partnerDisplayOverride)
+        } else if let encoded = try? JSONEncoder().encode(override) {
+            userDefaults.set(encoded, forKey: DefaultsKey.partnerDisplayOverride)
+        }
+    }
+
+    func clearPartnerDisplayOverride() {
+        partnerDisplayOverride = .none
+        userDefaults.removeObject(forKey: DefaultsKey.partnerDisplayOverride)
+    }
+
     func setLocalBirthday(_ birthday: CalendarDateValue?) {
         localBirthday = birthday
         let encoded = birthday.flatMap { try? JSONEncoder().encode($0) }
         userDefaults.set(encoded, forKey: DefaultsKey.birthday)
         publishLocalProfile()
+        evaluateBubbleUnlocks(allowNotification: true)
     }
 
     private func publishLocalProfile() {
         guard let role = snapshot.pairConfiguration?.localRole else { return }
-        write { try $0.setRoleProfile(role: role, bubbleColor: localBubbleColor, birthday: localBirthday) }
+        write {
+            try $0.setRoleProfile(
+                role: role,
+                bubbleColor: localBubbleColor,
+                birthday: localBirthday,
+                avatarAssetID: localAvatarAssetID,
+                expression: localBubbleExpression,
+                expressionRotationPool: localBubbleExpressionRotation,
+                decorations: localBubbleDecorations
+            )
+        }
         scheduleHistorySyncIfPaired()
+    }
+
+    @discardableResult
+    func setLocalAvatar(rawImageData: Data) -> Bool {
+        guard let jpegData = PhotoMetadataProcessor.processAvatar(from: rawImageData) else { return false }
+        return setLocalAvatar(croppedJPEGData: jpegData)
+    }
+
+    @discardableResult
+    func setLocalAvatar(croppedJPEGData jpegData: Data) -> Bool {
+        let newID = UUID()
+        do {
+            try assetStore.saveData(jpegData, kind: .avatar, id: newID)
+        } catch {
+            journalError = error.localizedDescription
+            return false
+        }
+        let previousID = localAvatarAssetID
+        localAvatarAssetID = newID
+        userDefaults.set(newID.uuidString, forKey: DefaultsKey.avatarAssetID)
+        if let image = UIImage(data: jpegData) {
+            imageCache.setObject(image, forKey: "\(PairAssetKind.avatar.rawValue):\(newID.uuidString)" as NSString)
+        }
+        if let previousID {
+            assetStore.deleteData(kind: .avatar, id: previousID)
+            imageCache.removeObject(forKey: "\(PairAssetKind.avatar.rawValue):\(previousID.uuidString)" as NSString)
+            deleteRemoteAssetBestEffort(kind: .avatar, id: previousID)
+        }
+        assetRevision += 1
+        publishLocalProfile()
+        scheduleAssetSync(delay: .seconds(1))
+        return true
+    }
+
+    func clearLocalAvatar() {
+        let previousID = localAvatarAssetID
+        localAvatarAssetID = nil
+        userDefaults.removeObject(forKey: DefaultsKey.avatarAssetID)
+        if let previousID {
+            assetStore.deleteData(kind: .avatar, id: previousID)
+            imageCache.removeObject(forKey: "\(PairAssetKind.avatar.rawValue):\(previousID.uuidString)" as NSString)
+            deleteRemoteAssetBestEffort(kind: .avatar, id: previousID)
+        }
+        assetRevision += 1
+        publishLocalProfile()
     }
 
     func setPartnerNickname(_ nickname: String) {
@@ -285,6 +778,7 @@ final class AppModel {
 
     func setAnniversaryDate(_ date: CalendarDateValue?) {
         write { try $0.setAnniversary(date) }
+        evaluateBubbleUnlocks(allowNotification: true)
         scheduleHistorySyncIfPaired()
     }
 
@@ -305,7 +799,7 @@ final class AppModel {
 
     func requestBluetoothPermission() {
         #if DEBUG
-        if isScreenshotDemo { return }
+        if isSandboxDemo { return }
         #endif
         engine.start()
         refreshPermissionStates()
@@ -320,7 +814,7 @@ final class AppModel {
     var isTogetherNow: Bool { activeSessionStartDate != nil }
     var activeSessionStartDate: Date? {
         #if DEBUG
-        if let screenshotFixedActiveSessionStart { return screenshotFixedActiveSessionStart }
+        if let debugSimulatedActiveSessionStart { return debugSimulatedActiveSessionStart }
         #endif
         return EncounterCalendarAggregator.coalescedActiveSessionStart(
             autoSessions: snapshot.sessions,
@@ -490,7 +984,479 @@ final class AppModel {
     }
 
     func saveMemo(dayKey: String, text: String) {
-        write { try $0.setMemo(dayKey: dayKey, text: text, pairID: snapshot.pairConfiguration?.pairID) }
+        if let localRole = snapshot.pairConfiguration?.localRole {
+            write {
+                try $0.setRoleMemo(
+                    dayKey: dayKey,
+                    role: localRole,
+                    text: text,
+                    pairID: snapshot.pairConfiguration?.pairID
+                )
+            }
+        } else {
+            write {
+                try $0.setMemo(dayKey: dayKey, text: text, pairID: nil, authorRole: nil)
+            }
+        }
+        scheduleHistorySyncIfPaired()
+    }
+
+    @discardableResult
+    func addDayPhoto(
+        dayKey: String,
+        rawImageData: Data,
+        overrideCoordinate: GeoCoordinate? = nil,
+        overrideLocationName: String? = nil,
+        placeTagID: UUID? = nil,
+        planID: UUID? = nil
+    ) async -> DayPhotoAttachment? {
+        guard let processed = await Task.detached(priority: .userInitiated, operation: {
+            PhotoMetadataProcessor.processDayPhoto(from: rawImageData)
+        }).value else { return nil }
+        return await commitProcessedPhoto(
+            processed,
+            dayKey: dayKey,
+            overrideCoordinate: overrideCoordinate,
+            overrideLocationName: overrideLocationName,
+            placeTagID: placeTagID,
+            planID: planID
+        )
+    }
+
+    @discardableResult
+    func addAlbumPhoto(
+        rawImageData: Data,
+        planID: UUID? = nil,
+        fallbackDayKey: String? = nil
+    ) async -> DayPhotoAttachment? {
+        guard let processed = await Task.detached(priority: .userInitiated, operation: {
+            PhotoMetadataProcessor.processDayPhoto(from: rawImageData)
+        }).value else { return nil }
+        let dayKey = processed.capturedAt.map { EncounterCalendarAggregator.dayKey(for: $0) }
+            ?? fallbackDayKey
+            ?? EncounterCalendarAggregator.dayKey(for: .now)
+        return await commitProcessedPhoto(processed, dayKey: dayKey, planID: planID)
+    }
+
+    private func commitProcessedPhoto(
+        _ processed: ProcessedDayPhoto,
+        dayKey: String,
+        overrideCoordinate: GeoCoordinate? = nil,
+        overrideLocationName: String? = nil,
+        placeTagID: UUID? = nil,
+        planID: UUID? = nil
+    ) async -> DayPhotoAttachment? {
+        let resolvedCoord = overrideCoordinate?.isValid == true ? overrideCoordinate : processed.coordinate
+        let resolvedName = await resolveLocationName(overrideLocationName: overrideLocationName, coordinate: resolvedCoord)
+
+        let photoID = UUID()
+        do {
+            try assetStore.saveData(processed.jpegData, kind: .dayPhoto, id: photoID)
+        } catch {
+            journalError = error.localizedDescription
+            return nil
+        }
+        if let image = UIImage(data: processed.jpegData) {
+            imageCache.setObject(image, forKey: "\(PairAssetKind.dayPhoto.rawValue):\(photoID.uuidString)" as NSString)
+        }
+
+        let attachment = DayPhotoAttachment(
+            id: photoID,
+            pairID: snapshot.pairConfiguration?.pairID,
+            dayKey: dayKey,
+            authorRole: snapshot.pairConfiguration?.localRole,
+            mediaKind: .photo,
+            placeTagID: placeTagID,
+            coordinate: resolvedCoord,
+            capturedAt: processed.capturedAt,
+            locationName: resolvedName,
+            planID: planID
+        )
+        write { try $0.addDayPhoto(attachment) }
+        assetRevision += 1
+        scheduleHistorySyncIfPaired()
+        scheduleAssetSync(delay: .milliseconds(300))
+        return attachment
+    }
+
+    @discardableResult
+    func addDayVideo(
+        dayKey: String,
+        fileURL: URL,
+        overrideCoordinate: GeoCoordinate? = nil,
+        overrideLocationName: String? = nil,
+        placeTagID: UUID? = nil,
+        planID: UUID? = nil,
+        onExportProgress: (@Sendable (Double) -> Void)? = nil
+    ) async -> DayPhotoAttachment? {
+        guard let processed = await PhotoMetadataProcessor.processDayVideo(
+            from: fileURL,
+            onProgress: onExportProgress
+        ) else {
+            return nil
+        }
+        return await commitProcessedVideo(
+            processed,
+            dayKey: dayKey,
+            overrideCoordinate: overrideCoordinate,
+            overrideLocationName: overrideLocationName,
+            placeTagID: placeTagID,
+            planID: planID
+        )
+    }
+
+    @discardableResult
+    func addAlbumVideo(
+        fileURL: URL,
+        planID: UUID? = nil,
+        fallbackDayKey: String? = nil,
+        onExportProgress: (@Sendable (Double) -> Void)? = nil
+    ) async -> DayPhotoAttachment? {
+        guard let processed = await PhotoMetadataProcessor.processDayVideo(
+            from: fileURL,
+            onProgress: onExportProgress
+        ) else {
+            return nil
+        }
+        let dayKey = processed.capturedAt.map { EncounterCalendarAggregator.dayKey(for: $0) }
+            ?? fallbackDayKey
+            ?? EncounterCalendarAggregator.dayKey(for: .now)
+        return await commitProcessedVideo(processed, dayKey: dayKey, planID: planID)
+    }
+
+    private func commitProcessedVideo(
+        _ processed: ProcessedDayVideo,
+        dayKey: String,
+        overrideCoordinate: GeoCoordinate? = nil,
+        overrideLocationName: String? = nil,
+        placeTagID: UUID? = nil,
+        planID: UUID? = nil
+    ) async -> DayPhotoAttachment? {
+        let resolvedCoord = overrideCoordinate?.isValid == true ? overrideCoordinate : processed.coordinate
+        let resolvedName = await resolveLocationName(overrideLocationName: overrideLocationName, coordinate: resolvedCoord)
+
+        let videoID = UUID()
+        let thumbID = UUID()
+        do {
+            try assetStore.saveData(processed.videoData, kind: .dayVideo, id: videoID)
+            try assetStore.saveData(processed.thumbnailJPEGData, kind: .dayPhoto, id: thumbID)
+        } catch {
+            assetStore.deleteData(kind: .dayVideo, id: videoID)
+            assetStore.deleteData(kind: .dayPhoto, id: thumbID)
+            journalError = error.localizedDescription
+            return nil
+        }
+        if let thumbImage = UIImage(data: processed.thumbnailJPEGData) {
+            imageCache.setObject(thumbImage, forKey: "\(PairAssetKind.dayPhoto.rawValue):\(thumbID.uuidString)" as NSString)
+        }
+
+        let attachment = DayPhotoAttachment(
+            id: videoID,
+            pairID: snapshot.pairConfiguration?.pairID,
+            dayKey: dayKey,
+            authorRole: snapshot.pairConfiguration?.localRole,
+            mediaKind: .video,
+            durationSeconds: processed.durationSeconds,
+            thumbnailAssetID: thumbID,
+            placeTagID: placeTagID,
+            coordinate: resolvedCoord,
+            capturedAt: processed.capturedAt,
+            locationName: resolvedName,
+            planID: planID
+        )
+        write { try $0.addDayPhoto(attachment) }
+        assetRevision += 1
+        scheduleHistorySyncIfPaired()
+        scheduleAssetSync(delay: .milliseconds(300))
+        return attachment
+    }
+
+    private func resolveLocationName(overrideLocationName: String?, coordinate: GeoCoordinate?) async -> String? {
+        let trimmed = overrideLocationName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, !trimmed.isEmpty { return trimmed }
+        guard let coordinate else { return nil }
+        #if DEBUG
+        if isSandboxDemo { return nil }
+        #endif
+        return await PhotoMetadataProcessor.reverseGeocodeName(for: coordinate)
+    }
+
+    func updateDayPhotoLocation(
+        id: UUID,
+        coordinate: GeoCoordinate?,
+        locationName: String?,
+        placeTagID: UUID? = nil
+    ) {
+        write {
+            try $0.updateDayPhotoLocation(
+                id: id,
+                coordinate: coordinate,
+                locationName: locationName,
+                placeTagID: placeTagID
+            )
+        }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func linkMedia(id: UUID, to placeTag: DayPlaceTag) {
+        let existing = mediaAttachment(id: id)
+        let coord = placeTag.coordinate ?? existing?.coordinate
+        updateDayPhotoLocation(
+            id: id,
+            coordinate: coord,
+            locationName: placeTag.name,
+            placeTagID: placeTag.id
+        )
+    }
+
+    func unlinkMediaFromPlaceTag(id: UUID) {
+        guard let existing = mediaAttachment(id: id) else { return }
+        updateDayPhotoLocation(
+            id: id,
+            coordinate: existing.coordinate,
+            locationName: existing.locationName,
+            placeTagID: nil
+        )
+    }
+
+    func setLinkedMedia(_ selectedIDs: Set<UUID>, for tag: DayPlaceTag) {
+        for photo in photos(forDayKey: tag.dayKey) {
+            if selectedIDs.contains(photo.id) {
+                let targetCoord = tag.coordinate ?? photo.coordinate
+                if photo.placeTagID != tag.id || photo.locationName != tag.name || photo.coordinate != targetCoord {
+                    linkMedia(id: photo.id, to: tag)
+                }
+            } else if photo.placeTagID == tag.id {
+                unlinkMediaFromPlaceTag(id: photo.id)
+            }
+        }
+    }
+
+    func deleteDayPhoto(id: UUID) {
+        let existing = mediaAttachment(id: id)
+        if existing?.mediaKind == .video {
+            assetStore.deleteData(kind: .dayVideo, id: id)
+            deleteRemoteAssetBestEffort(kind: .dayVideo, id: id)
+            if let thumbID = existing?.thumbnailAssetID {
+                assetStore.deleteData(kind: .dayPhoto, id: thumbID)
+                imageCache.removeObject(forKey: "\(PairAssetKind.dayPhoto.rawValue):\(thumbID.uuidString)" as NSString)
+                deleteRemoteAssetBestEffort(kind: .dayPhoto, id: thumbID)
+            }
+        } else {
+            assetStore.deleteData(kind: .dayPhoto, id: id)
+            imageCache.removeObject(forKey: "\(PairAssetKind.dayPhoto.rawValue):\(id.uuidString)" as NSString)
+            deleteRemoteAssetBestEffort(kind: .dayPhoto, id: id)
+        }
+        write { try $0.deleteDayPhoto(id: id) }
+        assetRevision += 1
+        scheduleHistorySyncIfPaired()
+    }
+
+    @discardableResult
+    func addDayPlaceTag(
+        dayKey: String,
+        name: String,
+        address: String? = nil,
+        coordinate: GeoCoordinate? = nil
+    ) -> DayPlaceTag? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let tag = DayPlaceTag(
+            pairID: snapshot.pairConfiguration?.pairID,
+            dayKey: dayKey,
+            name: trimmed,
+            address: address,
+            coordinate: coordinate,
+            authorRole: snapshot.pairConfiguration?.localRole
+        )
+        write { try $0.addDayPlaceTag(tag) }
+        scheduleHistorySyncIfPaired()
+        return tag
+    }
+
+    @discardableResult
+    func updateDayPlaceTag(
+        _ existing: DayPlaceTag,
+        name: String,
+        address: String?,
+        coordinate: GeoCoordinate?
+    ) -> DayPlaceTag? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let updated = DayPlaceTag(
+            id: existing.id,
+            pairID: existing.pairID ?? snapshot.pairConfiguration?.pairID,
+            dayKey: existing.dayKey,
+            name: trimmed,
+            address: address,
+            coordinate: coordinate,
+            authorRole: existing.authorRole ?? snapshot.pairConfiguration?.localRole,
+            createdAt: existing.createdAt,
+            updatedAt: .now
+        )
+        write { try $0.addDayPlaceTag(updated) }
+        for photo in photos(forDayKey: existing.dayKey) where photo.placeTagID == existing.id {
+            updateDayPhotoLocation(
+                id: photo.id,
+                coordinate: updated.coordinate ?? photo.coordinate,
+                locationName: updated.name,
+                placeTagID: updated.id
+            )
+        }
+        scheduleHistorySyncIfPaired()
+        return updated
+    }
+
+    func deleteDayPlaceTag(id: UUID) {
+        let linkedPhotos = journal.dayPhotos.filter { $0.placeTagID == id }
+        write { try $0.deleteDayPlaceTag(id: id) }
+        for photo in linkedPhotos {
+            updateDayPhotoLocation(
+                id: photo.id,
+                coordinate: photo.coordinate,
+                locationName: photo.locationName,
+                placeTagID: nil
+            )
+        }
+        scheduleHistorySyncIfPaired()
+    }
+
+    @discardableResult
+    func savePlanEvent(
+        existingID: UUID? = nil,
+        title: String,
+        startDayKey: String,
+        endDayKey: String,
+        icon: PairPlanIcon,
+        memo: String?,
+        checklist: [PairPlanChecklistItem]
+    ) -> PairPlanEvent? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let existing = existingID.flatMap { planEvent(id: $0) }
+        let normalizedChecklist = checklist.compactMap { item -> PairPlanChecklistItem? in
+            let itemTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !itemTitle.isEmpty else { return nil }
+            return PairPlanChecklistItem(id: item.id, title: itemTitle, isDone: item.isDone, kind: item.kind)
+        }
+        let event = PairPlanEvent(
+            id: existing?.id ?? existingID ?? UUID(),
+            pairID: existing?.pairID ?? snapshot.pairConfiguration?.pairID,
+            title: trimmed,
+            startDayKey: startDayKey,
+            endDayKey: endDayKey,
+            icon: icon,
+            memo: memo,
+            checklist: normalizedChecklist,
+            authorRole: existing?.authorRole ?? snapshot.pairConfiguration?.localRole,
+            createdAt: existing?.createdAt ?? .now,
+            updatedAt: .now
+        )
+        write { try $0.upsertPlanEvent(event) }
+        scheduleHistorySyncIfPaired()
+        return planEvent(id: event.id) ?? event
+    }
+
+    @discardableResult
+    func appendPlanChecklistItem(planID: UUID, title: String, kind: PairPlanChecklistKind) -> PairPlanChecklistItem? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let plan = planEvent(id: planID) else { return nil }
+        let newItem = PairPlanChecklistItem(title: trimmed, isDone: false, kind: kind)
+        var checklist = plan.checklist
+        checklist.append(newItem)
+        let updated = PairPlanEvent(
+            id: plan.id,
+            pairID: plan.pairID ?? snapshot.pairConfiguration?.pairID,
+            title: plan.title,
+            startDayKey: plan.startDayKey,
+            endDayKey: plan.endDayKey,
+            icon: plan.icon,
+            memo: plan.memo,
+            checklist: checklist,
+            authorRole: plan.authorRole ?? snapshot.pairConfiguration?.localRole,
+            createdAt: plan.createdAt,
+            updatedAt: .now
+        )
+        write { try $0.upsertPlanEvent(updated) }
+        scheduleHistorySyncIfPaired()
+        return newItem
+    }
+
+    func removePlanChecklistItem(planID: UUID, itemID: UUID) {
+        guard let plan = planEvent(id: planID) else { return }
+        let filtered = plan.checklist.filter { $0.id != itemID }
+        guard filtered.count != plan.checklist.count else { return }
+        let updated = PairPlanEvent(
+            id: plan.id,
+            pairID: plan.pairID ?? snapshot.pairConfiguration?.pairID,
+            title: plan.title,
+            startDayKey: plan.startDayKey,
+            endDayKey: plan.endDayKey,
+            icon: plan.icon,
+            memo: plan.memo,
+            checklist: filtered,
+            authorRole: plan.authorRole ?? snapshot.pairConfiguration?.localRole,
+            createdAt: plan.createdAt,
+            updatedAt: .now
+        )
+        write { try $0.upsertPlanEvent(updated) }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func togglePlanChecklistItem(planID: UUID, itemID: UUID) {
+        guard let plan = planEvent(id: planID),
+              let index = plan.checklist.firstIndex(where: { $0.id == itemID }) else { return }
+        var checklist = plan.checklist
+        checklist[index].isDone.toggle()
+        let updated = PairPlanEvent(
+            id: plan.id,
+            pairID: plan.pairID ?? snapshot.pairConfiguration?.pairID,
+            title: plan.title,
+            startDayKey: plan.startDayKey,
+            endDayKey: plan.endDayKey,
+            icon: plan.icon,
+            memo: plan.memo,
+            checklist: checklist,
+            authorRole: plan.authorRole ?? snapshot.pairConfiguration?.localRole,
+            createdAt: plan.createdAt,
+            updatedAt: .now
+        )
+        write { try $0.upsertPlanEvent(updated) }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func deletePlanEvent(id: UUID) {
+        write { try $0.deletePlanEvent(id: id) }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func assignMedia(id: UUID, toPlanID planID: UUID?) {
+        guard let existing = mediaAttachment(id: id) else { return }
+        let nextExcluded = planID.map { pid in existing.excludedPlanIDs.filter { $0 != pid } } ?? existing.excludedPlanIDs
+        write {
+            try $0.updateDayPhotoPlanAssignment(
+                id: id,
+                planID: planID,
+                excludedPlanIDs: nextExcluded
+            )
+        }
+        scheduleHistorySyncIfPaired()
+    }
+
+    func excludeMedia(id: UUID, fromPlanID planID: UUID) {
+        guard let existing = mediaAttachment(id: id) else { return }
+        let nextPlanID = existing.planID == planID ? nil : existing.planID
+        var nextExcluded = existing.excludedPlanIDs
+        if let plan = planEvent(id: planID), plan.contains(dayKey: existing.dayKey), !nextExcluded.contains(planID) {
+            nextExcluded.append(planID)
+        }
+        write {
+            try $0.updateDayPhotoPlanAssignment(
+                id: id,
+                planID: nextPlanID,
+                excludedPlanIDs: nextExcluded
+            )
+        }
         scheduleHistorySyncIfPaired()
     }
 
@@ -537,6 +1503,7 @@ final class AppModel {
                 sessionOverrideUpdates: sessionOverrideUpdates
             )
         }
+        evaluateBubbleUnlocks(allowNotification: true)
         scheduleHistorySyncIfPaired()
     }
 
@@ -598,6 +1565,160 @@ final class AppModel {
         )
     }
 
+    func lifetimeMetDayCount(asOf date: Date = .now) -> Int {
+        EncounterCalendarAggregator.lifetimeMetDayCount(
+            autoSessions: snapshot.sessions,
+            peerSessions: activePairPeerSessions,
+            locationSessions: locationMatchedSessions,
+            journal: journal,
+            activeReferenceDate: date
+        )
+    }
+
+    func currentCumulativeSeconds(asOf date: Date = .now) -> TimeInterval {
+        let base = lifetimeRecordedSeconds()
+        let activeElapsed: TimeInterval
+        if let start = activeSessionStartDate {
+            activeElapsed = max(0, date.timeIntervalSince(start))
+        } else {
+            activeElapsed = 0
+        }
+        #if DEBUG
+        return base + activeElapsed + max(0, debugBonusHours) * 3600.0
+        #else
+        return base + activeElapsed
+        #endif
+    }
+
+    func currentEffectiveDays(asOf date: Date = .now) -> Int {
+        let anniversaryDays = daysTogetherCount(asOf: date) ?? 0
+        let metDays = lifetimeMetDayCount(asOf: date)
+        let base = max(anniversaryDays, metDays)
+        #if DEBUG
+        return base + max(0, debugBonusDays)
+        #else
+        return base
+        #endif
+    }
+
+    private func detectedEventsSnapshot(asOf date: Date) -> Set<BubbleEventKind> {
+        let encounterDates = resolvedEncounters.flatMap { encounter -> [Date] in
+            if let end = encounter.endedAt {
+                return [encounter.startedAt, end]
+            }
+            return [encounter.startedAt]
+        }
+        var detected = BubbleEventDetector.detectedEvents(
+            asOf: date,
+            encounterDates: encounterDates,
+            anniversary: anniversaryDate,
+            myBirthday: localBirthday,
+            partnerBirthday: partnerBirthday
+        )
+        detected.formUnion(achievedBubbleEvents)
+        #if DEBUG
+        detected.formUnion(debugSimulatedEvents)
+        #endif
+        return detected
+    }
+
+    func bubbleUnlockProgress(asOf date: Date = .now) -> BubbleUnlockProgress {
+        #if DEBUG
+        let unlockAll = debugUnlockAllBubbleItems
+        #else
+        let unlockAll = false
+        #endif
+        return BubbleUnlockProgress(
+            cumulativeSeconds: currentCumulativeSeconds(asOf: date),
+            effectiveDays: currentEffectiveDays(asOf: date),
+            hasDiscoveredSecretPop: hasDiscoveredSecretPop,
+            achievedEvents: detectedEventsSnapshot(asOf: date),
+            unlockAllOverride: unlockAll
+        )
+    }
+
+    func evaluateBubbleUnlocks(asOf date: Date = .now, allowNotification: Bool = true) {
+        let detected = detectedEventsSnapshot(asOf: date)
+        #if DEBUG
+        let persistentEvents = isSandboxDemo
+            ? detected
+            : detected.subtracting(debugSimulatedEvents)
+        #else
+        let persistentEvents = detected
+        #endif
+        if !persistentEvents.isSubset(of: achievedBubbleEvents) {
+            achievedBubbleEvents.formUnion(persistentEvents)
+            userDefaults.set(achievedBubbleEvents.map(\.rawValue).sorted(), forKey: DefaultsKey.achievedBubbleEvents)
+        }
+
+        let progress = BubbleUnlockProgress(
+            cumulativeSeconds: currentCumulativeSeconds(asOf: date),
+            effectiveDays: currentEffectiveDays(asOf: date),
+            hasDiscoveredSecretPop: hasDiscoveredSecretPop,
+            achievedEvents: detected,
+            unlockAllOverride: {
+                #if DEBUG
+                return debugUnlockAllBubbleItems
+                #else
+                return false
+                #endif
+            }()
+        )
+        let newlyUnlocked = progress.unlockedNonStarterItems.filter { !seenUnlockedItemIDs.contains($0.id) }
+        guard !newlyUnlocked.isEmpty else { return }
+
+        for item in newlyUnlocked {
+            seenUnlockedItemIDs.insert(item.id)
+            unseenUnlockedItemIDs.insert(item.id)
+        }
+        userDefaults.set(Array(seenUnlockedItemIDs).sorted(), forKey: DefaultsKey.seenUnlockedItems)
+        userDefaults.set(Array(unseenUnlockedItemIDs).sorted(), forKey: DefaultsKey.unseenUnlockedItems)
+
+        var canShowBanner = allowNotification && hasCompletedOnboarding
+        #if DEBUG
+        if ScreenshotScene.current != nil {
+            canShowBanner = false
+        }
+        #endif
+        if canShowBanner {
+            if let existing = activeUnlockBanner {
+                var merged = existing.items
+                for item in newlyUnlocked where !merged.contains(where: { $0.id == item.id }) {
+                    merged.append(item)
+                }
+                activeUnlockBanner = BubbleUnlockBanner(items: merged)
+            } else {
+                activeUnlockBanner = BubbleUnlockBanner(items: newlyUnlocked)
+            }
+        }
+    }
+
+    func recordSecretBubblePop() {
+        let alreadyDiscovered = hasDiscoveredSecretPop
+        if !alreadyDiscovered {
+            hasDiscoveredSecretPop = true
+            userDefaults.set(true, forKey: DefaultsKey.discoveredSecretPop)
+        }
+        guard !alreadyDiscovered else { return }
+        secretPopUnlockTask?.cancel()
+        let delay: Duration = UIAccessibility.isReduceMotionEnabled ? .milliseconds(450) : .milliseconds(2700)
+        secretPopUnlockTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.evaluateBubbleUnlocks(allowNotification: true)
+        }
+    }
+
+    func dismissUnlockBanner() {
+        activeUnlockBanner = nil
+    }
+
+    func markBubbleUnlocksSeen() {
+        guard !unseenUnlockedItemIDs.isEmpty else { return }
+        unseenUnlockedItemIDs.removeAll()
+        userDefaults.removeObject(forKey: DefaultsKey.unseenUnlockedItems)
+    }
+
     func startInvitePairing() throws -> String {
         let bundle = PairingPayloadCodec.makePairingBundle()
         try configure(bundle.localConfiguration)
@@ -646,6 +1767,9 @@ final class AppModel {
 
     @discardableResult
     func ensurePairSpaceReady() async -> PairSpaceContext? {
+        #if DEBUG
+        if isSandboxDemo { return nil }
+        #endif
         guard let config = snapshot.pairConfiguration else { return nil }
         if let activePairSpaceContext, !activePairSpaceContext.needsMaintenance { return activePairSpaceContext }
         if let pairSpaceSetupTask { return await pairSpaceSetupTask.value }
@@ -697,7 +1821,7 @@ final class AppModel {
 
     private func configure(_ configuration: PairConfiguration) throws {
         #if DEBUG
-        if isScreenshotDemo { throw PairSetupError.saveFailed }
+        if isSandboxDemo { throw PairSetupError.saveFailed }
         #endif
         let previous = snapshot.pairConfiguration
         engine.configurePair(configuration)
@@ -725,7 +1849,17 @@ final class AppModel {
             }
             write { try $0.clearRoleProfiles() }
         }
-        write { try $0.setRoleProfile(role: configuration.localRole, bubbleColor: localBubbleColor, birthday: localBirthday) }
+        write {
+            try $0.setRoleProfile(
+                role: configuration.localRole,
+                bubbleColor: localBubbleColor,
+                birthday: localBirthday,
+                avatarAssetID: localAvatarAssetID,
+                expression: localBubbleExpression,
+                expressionRotationPool: localBubbleExpressionRotation,
+                decorations: localBubbleDecorations
+            )
+        }
         if let transitionError { journalError = transitionError }
         if let metadata = pendingExternalShareMetadata {
             pendingExternalShareMetadata = nil
@@ -735,6 +1869,7 @@ final class AppModel {
         }
         engine.start()
         scheduleHistorySync(delay: .seconds(1))
+        scheduleAssetSync(delay: .seconds(2))
         if locationMonitor.isEnabled {
             locationMonitor.startIfAuthorized()
             scheduleLocationSync(delay: .seconds(1))
@@ -752,7 +1887,7 @@ final class AppModel {
 
     func unpair() {
         #if DEBUG
-        if isScreenshotDemo { return }
+        if isSandboxDemo { return }
         #endif
         pendingExternalShareMetadata = nil
         let previousConfig = snapshot.pairConfiguration
@@ -766,8 +1901,11 @@ final class AppModel {
         write { try $0.clearRoleProfiles() }
         if let transitionError { journalError = transitionError }
         setPartnerNickname("")
+        clearPartnerDisplayOverride()
         scheduledSyncTask?.cancel()
         scheduledHistorySyncTask?.cancel()
+        scheduledAssetSyncTask?.cancel()
+        assetSyncTask?.cancel()
         _ = try? locationStore.clearAll()
         try? peerSyncStore.clearAll()
         peerSessions = []
@@ -782,6 +1920,9 @@ final class AppModel {
         activePairSpaceContext = nil
         pairSpaceStatus = .idle
         lastHistorySyncBackend = nil
+        assetUploadProgress = nil
+        assetDownloadProgress = nil
+        uploadingMediaIDs = []
 
         if let config { engine.enqueuePendingPurge(config) }
 
@@ -789,14 +1930,17 @@ final class AppModel {
         let setup = pairSpaceSetupTask
         let history = historySyncTask
         let location = locationSyncTask
+        let assets = assetSyncTask
         pairSpaceSetupTask = nil
         historySyncTask = nil
         locationSyncTask = nil
+        assetSyncTask = nil
         pairSpaceResetTask = Task { [weak self, pairSpace] in
             await previousReset?.value
             _ = await setup?.value
             _ = await history?.value
             _ = await location?.value
+            _ = await assets?.value
             await pairSpace.invalidate()
             await self?.drainPendingPurges(priorityConfig: config, context: context)
         }
@@ -825,6 +1969,9 @@ final class AppModel {
     }
 
     private func invalidatePairSpaceForAccountOrZoneChange() {
+        #if DEBUG
+        if isSandboxDemo { return }
+        #endif
         resetPairSpace()
         pairSpaceStatus = snapshot.isPaired ? .settingUp : .idle
         guard snapshot.isPaired else { return }
@@ -853,7 +2000,7 @@ final class AppModel {
 
     func handleForegroundActivation() {
         #if DEBUG
-        if isScreenshotDemo { return }
+        if isSandboxDemo { return }
         #endif
         refreshPermissionStates()
         engine.handleForegroundActivation()
@@ -871,9 +2018,13 @@ final class AppModel {
         if locationMonitor.isEnabled && snapshot.isPaired && isAutoRecordingEnabled {
             Task { await syncLocationNow(requestFreshFix: true) }
         }
+        evaluateBubbleUnlocks(allowNotification: true)
     }
 
     func handleBackgroundLocationLaunch() {
+        #if DEBUG
+        if isSandboxDemo { return }
+        #endif
         engine.handleBackgroundWake(source: "launchLocation")
         locationMonitor.startIfAuthorized()
         if snapshot.isPaired {
@@ -887,7 +2038,7 @@ final class AppModel {
     @discardableResult
     func syncSharedHistoryNow() async -> HistorySyncOutcome? {
         #if DEBUG
-        if isScreenshotDemo { return nil }
+        if isSandboxDemo { return nil }
         #endif
         guard let config = snapshot.pairConfiguration else { return nil }
         if let historySyncTask { return await historySyncTask.value }
@@ -948,17 +2099,29 @@ final class AppModel {
             journal = (try? journalStore.load()) ?? updatedJournal
             journalChangedDuringSync = journal != updatedJournal
             let profile = journal.profile(for: config.localRole)
-            if profile?.bubbleColor != localBubbleColor || profile?.birthday != localBirthday {
+            if localAvatarAssetID == nil, let recoveredAvatar = profile?.avatarAssetID {
+                localAvatarAssetID = recoveredAvatar
+                userDefaults.set(recoveredAvatar.uuidString, forKey: DefaultsKey.avatarAssetID)
+                assetRevision += 1
+            } else if profile?.bubbleColor != localBubbleColor
+                        || profile?.birthday != localBirthday
+                        || profile?.avatarAssetID != localAvatarAssetID
+                        || profile?.expression != localBubbleExpression
+                        || profile?.expressionRotationPool != localBubbleExpressionRotation
+                        || profile?.decorations != localBubbleDecorations {
                 publishLocalProfile()
             }
         }
         if let updatedPeer = outcome.peerSessions {
             peerSessions = updatedPeer
         }
+        evaluateBubbleUnlocks(allowNotification: true)
         if outcome.invalidateContext {
             activePairSpaceContext = nil
             pairSpaceStatus = .settingUp
             await pairSpace.invalidate()
+        } else if context != nil {
+            scheduleAssetSync(delay: .milliseconds(250))
         }
         if isPairActive(config, generation: generation),
            historyInputRevision != startedRevision || journalChangedDuringSync {
@@ -969,6 +2132,9 @@ final class AppModel {
 
     @discardableResult
     func syncLocationNow(requestFreshFix: Bool) async -> LocationSyncOutcome? {
+        #if DEBUG
+        if isSandboxDemo { return nil }
+        #endif
         guard let config = snapshot.pairConfiguration, isAutoRecordingEnabled, locationMonitor.isEnabled else {
             return nil
         }
@@ -1020,6 +2186,7 @@ final class AppModel {
         if let updated = try? locationStore.load() {
             locationMatchedSessions = updated.matchedSessions
         }
+        evaluateBubbleUnlocks(allowNotification: true)
         if outcome.invalidateContext {
             activePairSpaceContext = nil
             pairSpaceStatus = .settingUp
@@ -1032,6 +2199,9 @@ final class AppModel {
     }
 
     func handleRemoteCloudKitPush() async -> UIBackgroundFetchResult {
+        #if DEBUG
+        if isSandboxDemo { return .noData }
+        #endif
         guard let config = snapshot.pairConfiguration else { return .noData }
         let generation = pairGeneration
         // A sync that was already running may have fetched before the pushed change.
@@ -1056,7 +2226,7 @@ final class AppModel {
 
     func handleAcceptedExternalShare(_ metadata: CKShare.Metadata) {
         #if DEBUG
-        if isScreenshotDemo { return }
+        if isSandboxDemo { return }
         #endif
         guard let config = snapshot.pairConfiguration else {
             pendingExternalShareMetadata = metadata
@@ -1114,8 +2284,247 @@ final class AppModel {
         }
     }
 
+    private func scheduleAssetSync(delay: Duration = .seconds(1)) {
+        #if DEBUG
+        if isSandboxDemo { return }
+        #endif
+        guard snapshot.isPaired else { return }
+        scheduledAssetSyncTask?.cancel()
+        scheduledAssetSyncTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.syncEncryptedAssetsIfNeeded()
+        }
+    }
+
+    private func deleteRemoteAssetBestEffort(kind: PairAssetKind, id: UUID) {
+        #if DEBUG
+        if isSandboxDemo { return }
+        #endif
+        guard let config = snapshot.pairConfiguration, let context = activePairSpaceContext else { return }
+        Task { [pairSpace] in
+            try? await pairSpace.deleteEncryptedAsset(kind: kind, assetID: id, config: config, context: context)
+        }
+    }
+
+    func syncEncryptedAssetsIfNeeded() async {
+        #if DEBUG
+        if isSandboxDemo { return }
+        #endif
+        guard let config = snapshot.pairConfiguration else { return }
+        if let assetSyncTask {
+            await assetSyncTask.value
+            return
+        }
+        let generation = pairGeneration
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await performAssetSync(config: config, generation: generation)
+            if generation == pairGeneration { assetSyncTask = nil }
+        }
+        assetSyncTask = task
+        await task.value
+    }
+
+    private func performAssetSync(config: PairConfiguration, generation: Int) async {
+        guard isPairActive(config, generation: generation),
+              let context = await ensurePairSpaceReady(),
+              isPairActive(config, generation: generation) else { return }
+
+        defer {
+            if isPairActive(config, generation: generation) {
+                assetUploadProgress = nil
+                assetDownloadProgress = nil
+                uploadingMediaIDs = []
+            }
+        }
+
+        let uploadedKey = "ourhours.uploadedAssets.\(context.zoneID.zoneName)"
+        var uploaded = Set(userDefaults.stringArray(forKey: uploadedKey) ?? [])
+        var seenUploadKeys = Set<String>()
+        var uploadTargets: [(kind: PairAssetKind, id: UUID, token: String, mediaID: UUID?)] = []
+
+        func enqueueUpload(_ kind: PairAssetKind, _ id: UUID?, mediaID: UUID? = nil) {
+            guard let id else { return }
+            let token = "\(kind.rawValue):\(id.uuidString)"
+            guard seenUploadKeys.insert(token).inserted else { return }
+            uploadTargets.append((kind, id, token, mediaID))
+        }
+
+        enqueueUpload(.avatar, localAvatarAssetID)
+        enqueueUpload(.avatar, journal.profile(for: config.localRole)?.avatarAssetID)
+        for photo in journal.dayPhotos where photo.pairID == nil || photo.pairID == config.pairID {
+            if photo.mediaKind == .video {
+                enqueueUpload(.dayPhoto, photo.thumbnailAssetID, mediaID: photo.id)
+                enqueueUpload(.dayVideo, photo.id, mediaID: photo.id)
+            } else {
+                enqueueUpload(.dayPhoto, photo.id, mediaID: photo.id)
+            }
+        }
+
+        let pendingUploads: [(kind: PairAssetKind, id: UUID, token: String, mediaID: UUID?, data: Data)] = uploadTargets.compactMap { target in
+            guard !uploaded.contains(target.token),
+                  let data = assetStore.loadData(kind: target.kind, id: target.id) else {
+                return nil
+            }
+            return (target.kind, target.id, target.token, target.mediaID, data)
+        }
+
+        if !pendingUploads.isEmpty {
+            let total = pendingUploads.count
+            uploadingMediaIDs = Set(pendingUploads.compactMap(\.mediaID))
+            for (index, item) in pendingUploads.enumerated() {
+                guard isPairActive(config, generation: generation) else { return }
+                let label = "iCloudへアップロード中 (\(index + 1)/\(total))"
+                assetUploadProgress = MediaTransferProgress(
+                    phase: .uploading,
+                    completedCount: index,
+                    totalCount: total,
+                    currentItemFraction: 0,
+                    detailText: label
+                )
+                do {
+                    try await pairSpace.saveEncryptedAsset(
+                        item.data,
+                        kind: item.kind,
+                        assetID: item.id,
+                        config: config,
+                        context: context
+                    ) { [weak self] fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isPairActive(config, generation: generation) else { return }
+                            self.assetUploadProgress = MediaTransferProgress(
+                                phase: .uploading,
+                                completedCount: index,
+                                totalCount: total,
+                                currentItemFraction: fraction,
+                                detailText: label
+                            )
+                        }
+                    }
+                    guard isPairActive(config, generation: generation) else { return }
+                    uploaded.insert(item.token)
+                    userDefaults.set(Array(uploaded), forKey: uploadedKey)
+                    assetUploadProgress = MediaTransferProgress(
+                        phase: .uploading,
+                        completedCount: index + 1,
+                        totalCount: total,
+                        currentItemFraction: 0,
+                        detailText: label
+                    )
+                    if let mediaID = item.mediaID {
+                        let stillPending = pendingUploads.dropFirst(index + 1).contains { $0.mediaID == mediaID }
+                        if !stillPending {
+                            uploadingMediaIDs.remove(mediaID)
+                        }
+                    }
+                } catch {
+                    // Retry on the next sync pass.
+                }
+            }
+            assetUploadProgress = nil
+            uploadingMediaIDs = []
+        }
+
+        var seenDownloadKeys = Set<String>()
+        var downloadTargets: [(kind: PairAssetKind, id: UUID)] = []
+
+        func enqueueDownload(_ kind: PairAssetKind, _ id: UUID?) {
+            guard let id else { return }
+            let token = "\(kind.rawValue):\(id.uuidString)"
+            guard seenDownloadKeys.insert(token).inserted,
+                  !assetStore.exists(kind: kind, id: id) else { return }
+            downloadTargets.append((kind, id))
+        }
+
+        enqueueDownload(.avatar, journal.profile(for: config.localRole.opposite)?.avatarAssetID)
+        enqueueDownload(.avatar, journal.profile(for: config.localRole)?.avatarAssetID)
+        enqueueDownload(.avatar, localAvatarAssetID)
+        for photo in journal.dayPhotos where photo.pairID == nil || photo.pairID == config.pairID {
+            if photo.mediaKind == .video {
+                enqueueDownload(.dayPhoto, photo.thumbnailAssetID)
+                enqueueDownload(.dayVideo, photo.id)
+            } else {
+                enqueueDownload(.dayPhoto, photo.id)
+            }
+        }
+
+        var didDownloadAny = false
+        if !downloadTargets.isEmpty {
+            let downloadTotal = downloadTargets.count
+            for (index, target) in downloadTargets.enumerated() {
+                guard isPairActive(config, generation: generation) else { return }
+                assetDownloadProgress = MediaTransferProgress(
+                    phase: .downloading,
+                    completedCount: index,
+                    totalCount: downloadTotal,
+                    currentItemFraction: 0.35,
+                    detailText: "iCloudから読み込み中 (\(index + 1)/\(downloadTotal))"
+                )
+                guard let data = try? await pairSpace.fetchEncryptedAsset(
+                    kind: target.kind, assetID: target.id, config: config, context: context
+                ) else { continue }
+                try? assetStore.saveData(data, kind: target.kind, id: target.id)
+                if target.kind != .dayVideo, let image = UIImage(data: data) {
+                    imageCache.setObject(image, forKey: "\(target.kind.rawValue):\(target.id.uuidString)" as NSString)
+                }
+                didDownloadAny = true
+            }
+            assetDownloadProgress = nil
+        }
+
+        if didDownloadAny && isPairActive(config, generation: generation) {
+            assetRevision += 1
+        }
+    }
+
     func export(_ format: LogExport.Format) -> LogExport {
         LogExport(engine: engine, format: format)
+    }
+
+    func diagnosticSummaryText() -> String {
+        let info = Bundle.main.infoDictionary
+        let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let buildVersion = info?["CFBundleVersion"] as? String ?? "1"
+        let bundleID = Bundle.main.bundleIdentifier ?? "unknown"
+        #if DEBUG
+        let buildType = "DEBUG"
+        #else
+        let buildType = "RELEASE"
+        #endif
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+
+        let pairLine: String
+        if let pair = snapshot.pairConfiguration {
+            let shortID = String(pair.pairID.uuidString.prefix(8))
+            pairLine = "Paired (id=\(shortID), role=\(pair.localRole.shortCode), epoch=\(pair.keyEpoch))"
+        } else {
+            pairLine = "Unpaired"
+        }
+
+        let unknownEndCount = snapshot.sessions.count(where: { $0.status == .unknownEnd })
+        let activeCount = snapshot.sessions.count(where: { $0.status == .active })
+        let pathText = (snapshot.activeSession?.connectionPath ?? snapshot.lastConnectionPath)?.rawValue ?? "none"
+        let lastAuthText = snapshot.lastAuthDate.map { iso.string(from: $0) } ?? "none"
+        let lastErrorText = snapshot.lastErrorMessage ?? "none"
+        let cleanPairSpace = pairSpaceStatusText.replacingOccurrences(of: "\n", with: " / ")
+
+        return [
+            "OurHours Diagnostic Summary",
+            "Generated: \(iso.string(from: .now))",
+            "App: \(shortVersion) (\(buildVersion)) [\(buildType)]",
+            "Bundle ID: \(bundleID)",
+            "Pair: \(pairLine)",
+            "AutoRecording: \(isAutoRecordingEnabled ? "ON" : "OFF")",
+            "BLE: central=\(snapshot.centralState), peripheral=\(snapshot.peripheralState), scanning=\(snapshot.isScanning), advertising=\(snapshot.isAdvertising), activeLinks=\(snapshot.activeLinkCount), path=\(pathText), lastAuth=\(lastAuthText)",
+            "BLE Sessions: total=\(snapshot.sessions.count), active=\(activeCount), unknownEnd=\(unknownEndCount)",
+            "BLE LastError: \(lastErrorText)",
+            "CloudKit PairSpace: \(cleanPairSpace)",
+            "CloudKit HistorySync: \(historySyncStatusText) (peerSessions=\(syncedPeerSessionCount))",
+            "Location: enabled=\(locationMonitor.isEnabled ? "ON" : "OFF"), status=\(locationMonitor.statusDescription)",
+            "Location Sync: \(locationSyncStatusText) (matched=\(locationMatchedSessions.count))"
+        ].joined(separator: "\n")
     }
 }
 

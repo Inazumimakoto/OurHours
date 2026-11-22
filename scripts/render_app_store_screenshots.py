@@ -17,6 +17,7 @@ except ImportError as error:
 
 WIDTH, HEIGHT = 1320, 2868
 SIZE = (WIDTH, HEIGHT)
+SIZE_1206 = (1206, 2622)
 INK = "#242947"
 SKY = ("#FFE4CF", "#FCE8D8", "#F8E8F2", "#E6EBFF")
 SOURCE = Path(__file__).resolve().parents[1] / "Apps/OurHoursiOS/Sources"
@@ -29,10 +30,27 @@ PREVIEW_GAP = 12
 PREVIEW_SIZE = (264, 574)
 
 
-RAW_NAMES = ("raw_home.png", "raw_calendar.png", "raw_dayDetail.png", "raw_pairing.png")
-PANEL_NAMES = ("01_hero.png", "02_home.png", "03_calendar.png", "04_timeline.png", "05_pairing.png")
+RAW_NAMES = (
+    "raw_home.png",
+    "raw_calendar.png",
+    "raw_gallery.png",
+    "raw_map.png",
+    "raw_customizer.png",
+    "raw_dayDetail.png",
+    "raw_pairing.png",
+)
+PANEL_NAMES = (
+    "01_hero.png",
+    "02_home.png",
+    "03_calendar.png",
+    "04_album.png",
+    "05_map.png",
+    "06_customizer.png",
+    "07_timeline.png",
+    "08_pairing.png",
+)
 PANORAMA_PREVIEW = "preview_panorama_1_2_3.png"
-ALL_PREVIEW = "preview_all_5.png"
+ALL_PREVIEW = "preview_all_8.png"
 
 
 def color_ramp(stops, length):
@@ -587,8 +605,17 @@ def panorama(home, calendar):
     return [canvas.crop((i * WIDTH, 0, (i + 1) * WIDTH, HEIGHT)).convert("RGB") for i in range(3)]
 
 
-def standalone(screen, pairing=False):
-    palette = ("#FCEADB", "#F7E4EE", "#DDE6FF") if pairing else ("#FFE1CA", "#FBEBDE", "#F8E6F1")
+def standalone_panel(
+    screen,
+    lines,
+    subtitle=None,
+    seed=0.6,
+    tint="#FFD6EC",
+    palette=("#FFE1CA", "#FBEBDE", "#F8E6F1"),
+    flip_bubbles=False,
+    phone_width=980,
+    phone_top_y=895,
+):
     canvas = sky(WIDTH, palette)
     placements = (
         (66, 80, 135, 25), (252, 107, 83, 131), (495, 68, 55, 19),
@@ -601,17 +628,19 @@ def standalone(screen, pairing=False):
         (1316, 2200, 145, 149), (25, 2459, 95, 51), (1296, 2565, 101, 95),
         (45, 2812, 221, 119), (1307, 2771, 71, 13),
     )
-    if pairing:
+    if flip_bubbles:
         placements = [(WIDTH - x, y, diameter, phase) for x, y, diameter, phase in placements]
     bubbles(canvas, placements, opacity=0.83)
-    if pairing:
-        bubble_card(canvas, (96, 220, 1224, 754), ("QRコードで", "かんたんペア設定"),
-                    seed=3.6, max_size=111, tint="#D3DCFF", subtitle="iCloudで自動同期・地図は非表示")
-        phone(canvas, screen, 1060, (660, 940))
-    else:
-        bubble_card(canvas, (96, 219, 1224, 754), ("1分単位で編集", "ひとことメモも共有"),
-                    seed=0.6, max_size=111, tint="#FFD6EC")
-        phone(canvas, screen, 1010, (660, 884))
+    bubble_card(
+        canvas,
+        (96, 220, 1224, 754),
+        lines,
+        seed=seed,
+        max_size=108,
+        tint=tint,
+        subtitle=subtitle,
+    )
+    phone(canvas, screen, phone_width, (660, phone_top_y))
     return canvas.convert("RGB")
 
 
@@ -624,24 +653,92 @@ def preview(panels, gap=0):
     return strip
 
 
-def render(raw_dir, out_dir):
+def render(raw_dir, out_dir, also_1206_dir=None, preview_dir=None):
     missing = [name for name in RAW_NAMES if not (raw_dir / name).is_file()]
     if missing:
         raise FileNotFoundError(f"Missing simulator PNGs in {raw_dir}: {', '.join(missing)}")
-    home, calendar, day_detail, pairing = (normalized_screen(raw_dir / name) for name in RAW_NAMES)
+    home, calendar, gallery, map_screen, customizer, day_detail, pairing = (
+        normalized_screen(raw_dir / name) for name in RAW_NAMES
+    )
+
     panels = panorama(home, calendar)
-    panels.extend((standalone(day_detail), standalone(pairing, pairing=True)))
+    panels.extend((
+        standalone_panel(
+            gallery,
+            lines=("旅行アルバムと", "写真・動画を共有"),
+            subtitle="予定と自動でまとまる",
+            seed=1.1,
+            tint="#FFD6EC",
+            palette=("#FFE5D2", "#FCEAE2", "#F7E6F4"),
+            flip_bubbles=False,
+            phone_width=980,
+            phone_top_y=895,
+        ),
+        standalone_panel(
+            map_screen,
+            lines=("行った場所が", "思い出マップに"),
+            subtitle="写真と場所タグで振り返る",
+            seed=2.4,
+            tint="#CBE9FF",
+            palette=("#EAF4FF", "#F4ECF9", "#FFEADB"),
+            flip_bubbles=True,
+            phone_width=960,
+            phone_top_y=885,
+        ),
+        standalone_panel(
+            customizer,
+            lines=("シャボン玉を", "じぶん好みにきせかえ"),
+            subtitle="時間や季節イベントで解放",
+            seed=4.2,
+            tint="#E4D3FF",
+            palette=("#F8E4F3", "#ECE8FF", "#FFE8DA"),
+            flip_bubbles=False,
+            phone_width=980,
+            phone_top_y=895,
+        ),
+        standalone_panel(
+            day_detail,
+            lines=("1分単位で編集", "写真もメモも1日に"),
+            subtitle=None,
+            seed=0.6,
+            tint="#FFD6EC",
+            palette=("#FFE1CA", "#FBEBDE", "#F8E6F1"),
+            flip_bubbles=True,
+            phone_width=1010,
+            phone_top_y=884,
+        ),
+        standalone_panel(
+            pairing,
+            lines=("QRコードで", "かんたんペア設定"),
+            subtitle="暗号化してiCloudで自動同期",
+            seed=3.6,
+            tint="#D3DCFF",
+            palette=("#FCEADB", "#F7E4EE", "#DDE6FF"),
+            flip_bubbles=False,
+            phone_width=1060,
+            phone_top_y=940,
+        ),
+    ))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, panel in zip(PANEL_NAMES, panels):
         panel.save(out_dir / name)
-    preview(panels[:3]).save(out_dir / PANORAMA_PREVIEW)
-    preview(panels, gap=PREVIEW_GAP).save(out_dir / ALL_PREVIEW)
+
+    if also_1206_dir is not None:
+        also_1206_dir.mkdir(parents=True, exist_ok=True)
+        for name, panel in zip(PANEL_NAMES, panels):
+            resized = panel.resize(SIZE_1206, LANCZOS).convert("RGB")
+            resized.save(also_1206_dir / name)
+
+    effective_preview_dir = preview_dir or out_dir
+    effective_preview_dir.mkdir(parents=True, exist_ok=True)
+    preview(panels[:3]).save(effective_preview_dir / PANORAMA_PREVIEW)
+    preview(panels, gap=PREVIEW_GAP).save(effective_preview_dir / ALL_PREVIEW)
 
 
 def mock_screens(raw_dir):
-    titles = ("", "カレンダー", "11月21日（土）", "ペア設定")
-    backgrounds = ("#FCE8DC", "#C3CFF8", "#C3CDF5", "#CED7FA")
+    titles = ("", "カレンダー", "アルバム", "思い出マップ", "シャボン玉きせかえ", "11月15日（日）", "ペア設定")
+    backgrounds = ("#FCE8DC", "#C3CFF8", "#F9E9F2", "#DDECFB", "#ECE3FF", "#C3CDF5", "#CED7FA")
     rng = random.Random(42)
     for index, (name, title, background) in enumerate(zip(RAW_NAMES, titles, backgrounds)):
         base = Image.new("RGBA", SIZE, background)
@@ -684,17 +781,39 @@ def mock_screens(raw_dir):
                 centered_text(draw, (x, y), str(day + 1), font("Bold", 53))
             captions = ()
         elif index == 2:
-            centered_text(draw, (660, 432), "3時間25分", font("Bold", 105))
+            draw.rounded_rectangle((72, 420, 636, 760), radius=48, fill="#FFFAFD")
+            centered_text(draw, (354, 590), "箱根温泉旅行", font("Bold", 44))
+            draw.rounded_rectangle((684, 420, 1248, 760), radius=48, fill="#FFFAFD")
+            centered_text(draw, (966, 590), "代官山ステイ", font("Bold", 44))
+            for row in range(3):
+                for col in range(3):
+                    gx, gy = 72 + col * 400, 860 + row * 400
+                    draw.rounded_rectangle((gx, gy, gx + 372, gy + 372), radius=36, fill="#FFE2EC")
+            captions = ()
+        elif index == 3:
+            draw.rounded_rectangle((72, 380, 1248, 2500), radius=56, fill="#DDEFE2")
+            draw.rounded_rectangle((120, 1880, 1200, 2400), radius=52, fill="#FFFAFD")
+            centered_text(draw, (660, 2140), "横浜みなとみらい", font("Bold", 52))
+            captions = ()
+        elif index == 4:
+            mascot(base, (660, 820), 420)
+            for row in range(3):
+                for col in range(3):
+                    gx, gy = 72 + col * 400, 1260 + row * 390
+                    draw.rounded_rectangle((gx, gy, gx + 372, gy + 350), radius=40, fill="#FFFAFD")
+            captions = ()
+        elif index == 5:
+            centered_text(draw, (660, 432), "8時間30分", font("Bold", 105))
             draw.rounded_rectangle((90, 572, 1230, 760), radius=54, fill="#FFFAFC")
-            centered_text(draw, (660, 665), "久しぶりに一緒にお散歩", font("Medium", 46))
+            centered_text(draw, (660, 665), "ランチしてから夕方の映画を観た！", font("Medium", 46))
             for index_in_grid, hour in enumerate(range(9, 19)):
                 y = 922 + index_in_grid * 154
                 draw.text((92, y - 27), f"{hour}:00", font=font("Medium", 38), fill=INK)
                 draw.line((260, y, 1210, y), fill="#DED3E7", width=3)
             draw.rounded_rectangle((325, 1080, 1150, 1545), radius=64, fill="#F6CBE1")
             draw.rounded_rectangle((325, 1845, 1150, 2100), radius=64, fill="#E2DDF9")
-            centered_text(draw, (738, 1306), "2時間10分", font("Bold", 65))
-            centered_text(draw, (738, 1968), "1時間15分", font("Bold", 65))
+            centered_text(draw, (738, 1306), "4時間", font("Bold", 65))
+            centered_text(draw, (738, 1968), "4時間30分", font("Bold", 65))
             captions = ()
         else:
             centered_text(draw, (660, 484), "相手を招待する", font("Bold", 83))
@@ -716,32 +835,42 @@ def mock_screens(raw_dir):
         base.convert("RGB").save(raw_dir / name)
 
 
-def self_test(out_dir):
-    with TemporaryDirectory(prefix="ourhours-raw-") as raw_dir:
-        raw_dir = Path(raw_dir)
-        mock_screens(raw_dir)
-        render(raw_dir, out_dir)
+def validate_outputs(out_dir, expected_size, check_previews=True, preview_dir=None):
     for name in PANEL_NAMES:
         path = out_dir / name
         assert path.is_file(), f"Missing {path}"
         with Image.open(path) as image:
             image.load()
-            assert image.format == "PNG" and image.mode == "RGB" and image.size == SIZE, path
+            assert image.format == "PNG" and image.mode == "RGB" and image.size == expected_size, (path, image.size)
             assert "transparency" not in image.info, path
-    for name, count, gap in ((PANORAMA_PREVIEW, 3, 0), (ALL_PREVIEW, 5, PREVIEW_GAP)):
-        path = out_dir / name
-        assert path.is_file(), f"Missing {path}"
-        with Image.open(path) as image:
-            image.load()
-            assert image.format == "PNG" and image.mode == "RGB", path
-            assert image.size == (count * PREVIEW_SIZE[0] + (count + 1) * gap,
-                                  PREVIEW_SIZE[1] + 2 * gap), path
+    if check_previews:
+        eff_preview_dir = preview_dir or out_dir
+        for name, count, gap in ((PANORAMA_PREVIEW, 3, 0), (ALL_PREVIEW, len(PANEL_NAMES), PREVIEW_GAP)):
+            path = eff_preview_dir / name
+            assert path.is_file(), f"Missing {path}"
+            with Image.open(path) as image:
+                image.load()
+                assert image.format == "PNG" and image.mode == "RGB", path
+                assert image.size == (count * PREVIEW_SIZE[0] + (count + 1) * gap,
+                                      PREVIEW_SIZE[1] + 2 * gap), path
+
+
+def self_test(out_dir):
+    with TemporaryDirectory(prefix="ourhours-raw-") as raw_dir:
+        raw_dir = Path(raw_dir)
+        out_1206 = out_dir / "1206x2622"
+        mock_screens(raw_dir)
+        render(raw_dir, out_dir, also_1206_dir=out_1206)
+    validate_outputs(out_dir, SIZE, check_previews=True)
+    validate_outputs(out_1206, SIZE_1206, check_previews=False)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-dir", type=Path, help="directory containing the four simulator PNGs")
-    parser.add_argument("--out-dir", type=Path, help="directory for promotional screenshots and previews")
+    parser.add_argument("--raw-dir", type=Path, help="directory containing the simulator PNGs")
+    parser.add_argument("--out-dir", type=Path, help="directory for 1320x2868 promotional screenshots")
+    parser.add_argument("--also-1206-dir", type=Path, help="optional directory for 1206x2622 screenshots")
+    parser.add_argument("--preview-dir", type=Path, help="optional separate directory for preview strips")
     parser.add_argument("--self-test", action="store_true", help="render and validate synthetic captures")
     args = parser.parse_args()
     if args.self_test:
@@ -757,10 +886,13 @@ def main():
         if args.self_test:
             self_test(out_dir)
         else:
-            render(args.raw_dir, out_dir)
+            render(args.raw_dir, out_dir, also_1206_dir=args.also_1206_dir, preview_dir=args.preview_dir)
+            validate_outputs(out_dir, SIZE, check_previews=True, preview_dir=args.preview_dir)
+            if args.also_1206_dir is not None:
+                validate_outputs(args.also_1206_dir, SIZE_1206, check_previews=False)
     except OSError as error:
         parser.exit(1, f"{error}\n")
-    print(f"Wrote five screenshots and two previews to {out_dir}")
+    print(f"Wrote {len(PANEL_NAMES)} screenshots to {out_dir}")
 
 
 if __name__ == "__main__":

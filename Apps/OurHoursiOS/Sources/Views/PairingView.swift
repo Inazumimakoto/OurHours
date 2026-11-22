@@ -209,7 +209,7 @@ struct PairingFlow: View {
                 ReleaseBubbleCard(title: "プライバシーと仕組み", isTogether: model.isTogetherNow, seed: 1.4) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("画面を閉じている間も、Bluetoothと暗号化した位置滞在ログの突き合わせで「一緒にいる時間」を自動記録します。")
-                        Text("地図や相手の位置座標は画面に表示しません。自動記録や位置補完は設定でいつでも停止できます。")
+                        Text("現在地のリアルタイム共有や、滞在ログの地図表示は行いません。自動記録や位置補完は設定でいつでも停止できます。")
                     }
                     .font(FoamFont.regular(14, relativeTo: .footnote))
                 }

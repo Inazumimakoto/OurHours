@@ -235,7 +235,7 @@ public enum EncounterCalendarAggregator {
         while date < month.end, let day = calendar.dateInterval(of: .day, for: date) {
             let key = dayKey(for: day.start, calendar: calendar)
             let slices = slicesByDay[day.start] ?? []
-            let memo = journal.dailyMemos[key]?.text
+            let memo = journal.anyMemoText(forDayKey: key)
             if !slices.isEmpty || memo != nil {
                 summaries[key] = summarize(dayKey: key, date: day.start, slices: slices, memo: memo)
             }
@@ -268,7 +268,7 @@ public enum EncounterCalendarAggregator {
         } else {
             slices = []
         }
-        return summarize(dayKey: key, date: start, slices: slices, memo: journal.dailyMemos[key]?.text)
+        return summarize(dayKey: key, date: start, slices: slices, memo: journal.anyMemoText(forDayKey: key))
     }
 
     public static func monthlyRecordedSeconds(
@@ -331,6 +331,33 @@ public enum EncounterCalendarAggregator {
             activeReferenceDate: activeReferenceDate
         )
             .values.count { !$0.slices.isEmpty }
+    }
+
+    public static func lifetimeMetDayCount(
+        autoSessions: [EncounterSession],
+        peerSessions: [SyncedPeerSession] = [],
+        locationSessions: [LocationMatchedSession] = [],
+        journal: JournalSnapshot,
+        calendar: Calendar = .current,
+        activeReferenceDate: Date? = nil
+    ) -> Int {
+        let encounters = resolveEncounters(
+            autoSessions: autoSessions,
+            peerSessions: peerSessions,
+            locationSessions: locationSessions,
+            journal: journal
+        )
+        var dayKeys = Set<String>()
+        for encounter in encounters {
+            var cursor = encounter.startedAt
+            while let day = calendar.dateInterval(of: .day, for: cursor),
+                  let slice = makeSlice(encounter, day: day, calendar: calendar, activeReferenceDate: activeReferenceDate) {
+                dayKeys.insert(slice.dayKey)
+                guard slice.continuesToNextDay else { break }
+                cursor = day.end
+            }
+        }
+        return dayKeys.count
     }
 
     public static func coalescedActiveSessionStart(

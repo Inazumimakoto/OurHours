@@ -99,6 +99,97 @@ struct FoamCalendarIcon: View {
     }
 }
 
+struct FoamMapIcon: View {
+    let active: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            let accent = active ? FoamTheme.ink.opacity(0.88) : FoamTheme.ink.opacity(0.50)
+            let stroke = StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round)
+
+            var pin = Path()
+            pin.move(to: CGPoint(x: w * 0.50, y: h * 0.85))
+            pin.addCurve(
+                to: CGPoint(x: w * 0.22, y: h * 0.44),
+                control1: CGPoint(x: w * 0.34, y: h * 0.72),
+                control2: CGPoint(x: w * 0.22, y: h * 0.57)
+            )
+            pin.addArc(
+                center: CGPoint(x: w * 0.50, y: h * 0.42),
+                radius: w * 0.28,
+                startAngle: .degrees(175),
+                endAngle: .degrees(5),
+                clockwise: false
+            )
+            pin.addCurve(
+                to: CGPoint(x: w * 0.50, y: h * 0.85),
+                control1: CGPoint(x: w * 0.78, y: h * 0.57),
+                control2: CGPoint(x: w * 0.66, y: h * 0.72)
+            )
+            pin.closeSubpath()
+
+            if active {
+                context.fill(pin, with: .color(FoamTheme.ink.opacity(0.08)))
+            }
+            context.stroke(pin, with: .color(accent), style: stroke)
+
+            let innerD = w * 0.22
+            let innerRect = CGRect(
+                x: w * 0.50 - innerD * 0.5,
+                y: h * 0.42 - innerD * 0.5,
+                width: innerD,
+                height: innerD
+            )
+            context.fill(Path(ellipseIn: innerRect), with: .color(accent.opacity(active ? 0.88 : 0.65)))
+        }
+        .frame(width: 26, height: 26)
+        .shadow(color: .white.opacity(active ? 0.65 : 0.92), radius: 0.4, y: 0.8)
+        .accessibilityHidden(true)
+    }
+}
+
+struct FoamGalleryIcon: View {
+    let active: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            let accent = active ? FoamTheme.ink.opacity(0.88) : FoamTheme.ink.opacity(0.50)
+            let stroke = StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round)
+
+            let frameRect = CGRect(x: w * 0.16, y: h * 0.21, width: w * 0.68, height: h * 0.58)
+            let framePath = Path(roundedRect: frameRect, cornerRadius: w * 0.18)
+
+            if active {
+                context.fill(framePath, with: .color(FoamTheme.ink.opacity(0.08)))
+            }
+            context.stroke(framePath, with: .color(accent), style: stroke)
+
+            var hills = Path()
+            hills.move(to: CGPoint(x: w * 0.20, y: h * 0.68))
+            hills.addQuadCurve(
+                to: CGPoint(x: w * 0.50, y: h * 0.50),
+                control: CGPoint(x: w * 0.34, y: h * 0.48)
+            )
+            hills.addQuadCurve(
+                to: CGPoint(x: w * 0.80, y: h * 0.66),
+                control: CGPoint(x: w * 0.64, y: h * 0.53)
+            )
+            context.stroke(hills, with: .color(accent.opacity(0.85)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+
+            let sunD = w * 0.14
+            let sunRect = CGRect(x: w * 0.61 - sunD * 0.5, y: h * 0.37 - sunD * 0.5, width: sunD, height: sunD)
+            context.fill(Path(ellipseIn: sunRect), with: .color(accent.opacity(active ? 0.90 : 0.66)))
+        }
+        .frame(width: 26, height: 26)
+        .shadow(color: .white.opacity(active ? 0.65 : 0.92), radius: 0.4, y: 0.8)
+        .accessibilityHidden(true)
+    }
+}
+
 struct FoamSettingsIcon: View {
     var body: some View {
         Canvas { context, size in

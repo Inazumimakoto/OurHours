@@ -8,6 +8,31 @@ public enum BubbleColorTheme: String, Codable, Sendable, Equatable, Hashable, Ca
     case mint
     case honeyYellow
     case coral
+    case peachCream
+    case matcha
+    case sodaPop
+    case berryRose
+    case sunsetGlow
+    case oceanDeep
+    case moonlight
+    case champagneGold
+    case auroraPrism
+    case snowCrystal
+    case santaRuby
+    case chocoMocha
+    case crimsonDawn
+    case easterPastel
+    case milkyWay
+
+    public static let starterColors: [BubbleColorTheme] = [
+        .clear,
+        .skyBlue,
+        .sakuraPink,
+        .lavender,
+        .mint,
+        .honeyYellow,
+        .coral
+    ]
 
     public var id: String { rawValue }
 
@@ -20,6 +45,21 @@ public enum BubbleColorTheme: String, Codable, Sendable, Equatable, Hashable, Ca
         case .mint: "ミント"
         case .honeyYellow: "はちみつ"
         case .coral: "コーラル"
+        case .peachCream: "ももクリーム"
+        case .matcha: "まっちゃ"
+        case .sodaPop: "ソーダ"
+        case .berryRose: "ベリーローズ"
+        case .sunsetGlow: "ゆうやけ"
+        case .oceanDeep: "うみいろ"
+        case .moonlight: "つきあかり"
+        case .champagneGold: "シャンパン"
+        case .auroraPrism: "オーロラ"
+        case .snowCrystal: "ゆきホワイト"
+        case .santaRuby: "サンタルビー"
+        case .chocoMocha: "ショコラ"
+        case .crimsonDawn: "あけぼの紅"
+        case .easterPastel: "イースターパステル"
+        case .milkyWay: "あまのがわ"
         }
     }
 }
@@ -66,12 +106,57 @@ public struct CalendarDateValue: Codable, Sendable, Equatable, Hashable, Compara
 public struct SyncedRoleProfile: Codable, Sendable, Equatable {
     public let bubbleColor: BubbleColorTheme
     public let birthday: CalendarDateValue?
+    public let avatarAssetID: UUID?
+    public let expression: BubbleExpression
+    public let expressionRotationPool: [BubbleExpression]
+    public let decorations: BubbleDecorationLoadout
     public let updatedAt: Date
 
-    public init(bubbleColor: BubbleColorTheme, birthday: CalendarDateValue?, updatedAt: Date) {
+    private enum CodingKeys: String, CodingKey {
+        case bubbleColor
+        case birthday
+        case avatarAssetID
+        case expression
+        case expressionRotationPool
+        case decorations
+        case updatedAt
+    }
+
+    public init(
+        bubbleColor: BubbleColorTheme,
+        birthday: CalendarDateValue?,
+        avatarAssetID: UUID? = nil,
+        expression: BubbleExpression = .classic,
+        expressionRotationPool: [BubbleExpression] = [],
+        decorations: BubbleDecorationLoadout = .none,
+        updatedAt: Date
+    ) {
         self.bubbleColor = bubbleColor
         self.birthday = birthday
+        self.avatarAssetID = avatarAssetID
+        self.expression = expression
+        self.expressionRotationPool = Self.deduplicated(expressionRotationPool)
+        self.decorations = decorations
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawColor = try container.decodeIfPresent(String.self, forKey: .bubbleColor)
+        bubbleColor = rawColor.flatMap(BubbleColorTheme.init(rawValue:)) ?? .skyBlue
+        birthday = try container.decodeIfPresent(CalendarDateValue.self, forKey: .birthday)
+        avatarAssetID = try container.decodeIfPresent(UUID.self, forKey: .avatarAssetID)
+        let rawExpression = try container.decodeIfPresent(String.self, forKey: .expression)
+        expression = rawExpression.flatMap(BubbleExpression.init(rawValue:)) ?? .classic
+        let rawPool = try container.decodeIfPresent([String].self, forKey: .expressionRotationPool) ?? []
+        expressionRotationPool = Self.deduplicated(rawPool.compactMap(BubbleExpression.init(rawValue:)))
+        decorations = try container.decodeIfPresent(BubbleDecorationLoadout.self, forKey: .decorations) ?? .none
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    private static func deduplicated(_ pool: [BubbleExpression]) -> [BubbleExpression] {
+        var seen = Set<BubbleExpression>()
+        return pool.filter { seen.insert($0).inserted }
     }
 }
 

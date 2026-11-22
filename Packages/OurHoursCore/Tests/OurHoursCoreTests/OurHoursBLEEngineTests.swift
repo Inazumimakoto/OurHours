@@ -137,6 +137,22 @@ struct OurHoursBLEEngineTests {
         #expect(BLEConstants.authTimeoutSeconds == 6)
         #expect(BLEConstants.knownPeerAuthFailureCooldownSeconds == 15)
 
+        #if DEBUG
+        #expect(BLEConstants.isDebugChannel)
+        #expect(BLEConstants.serviceUUID == CBUUID(string: BLEConstants.devServiceUUIDString))
+        #expect(BLEConstants.serviceUUID != CBUUID(string: BLEConstants.productionServiceUUIDString))
+        #expect(BLEConstants.authCharacteristicUUID == CBUUID(string: BLEConstants.devAuthCharacteristicUUIDString))
+        #expect(BLEConstants.authCharacteristicUUID != CBUUID(string: BLEConstants.productionAuthCharacteristicUUIDString))
+        #expect(BLEConstants.centralRestoreIdentifier.contains(".dev."))
+        #expect(BLEConstants.peripheralRestoreIdentifier.contains(".dev."))
+        #else
+        #expect(!BLEConstants.isDebugChannel)
+        #expect(BLEConstants.serviceUUID == CBUUID(string: BLEConstants.productionServiceUUIDString))
+        #expect(BLEConstants.authCharacteristicUUID == CBUUID(string: BLEConstants.productionAuthCharacteristicUUIDString))
+        #expect(!BLEConstants.centralRestoreIdentifier.contains(".dev."))
+        #expect(!BLEConstants.peripheralRestoreIdentifier.contains(".dev."))
+        #endif
+
         let invalidHandle = NSError(domain: CBATTErrorDomain, code: CBATTError.invalidHandle.rawValue)
         let otherATT = NSError(domain: CBATTErrorDomain, code: CBATTError.readNotPermitted.rawValue)
         let genericError = NSError(domain: "OurHoursTest", code: 1)

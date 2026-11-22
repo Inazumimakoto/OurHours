@@ -13,8 +13,12 @@ struct CalendarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var displayedMonth: Date
     @Binding var pendingRoute: SelectedDayRoute?
+    var onFocusMapCoordinate: ((GeoCoordinate) -> Void)? = nil
 
     @State private var selectedRoute: SelectedDayRoute?
+    @State private var planEditorRoute: PlanEditorRoute?
+    @State private var selectedPlanRoute: PlanDetailRoute?
+    @State private var pendingDayRouteAfterPlan: SelectedDayRoute?
     @State private var gridWidth: CGFloat = 340
     @State private var monthEpoch = 0
     @State private var bubblesRevealed = true
@@ -38,6 +42,7 @@ struct CalendarView: View {
         let year = monthComponents.year ?? 2026
         let month = monthComponents.month ?? 1
         let summaries = model.daySummaries(forMonth: currentFirst)
+        let monthPlans = model.planEvents(overlappingMonth: currentFirst)
         let pageStride = gridWidth + pageSpacing
 
         let isCurrentMonth = calendar.isDate(currentFirst, equalTo: .now, toGranularity: .month)
@@ -219,8 +224,16 @@ struct CalendarView: View {
                             }
                         }
                 )
+
+                calendarPlansSection(
+                    monthNumber: month,
+                    currentFirst: currentFirst,
+                    monthPlans: monthPlans,
+                    isCurrentMonth: isCurrentMonth
+                )
             }
             .padding(.horizontal, 12)
+            .padding(.bottom, 24)
         }
         .padding(.top, 62)
         .buttonStyle(.plain)
@@ -231,9 +244,234 @@ struct CalendarView: View {
             DayDetailSheet(
                 date: route.date,
                 startAdding: route.startAdding,
-                focusEncounterID: route.focusEncounterID
+                focusEncounterID: route.focusEncounterID,
+                onFocusMapCoordinate: onFocusMapCoordinate
             )
         }
+        .sheet(item: $planEditorRoute) { route in
+            PlanEventEditorSheet(
+                existingPlan: route.existingPlan,
+                initialDate: route.initialDate,
+                onSaved: { saved in
+                    if let savedMonth = PairPlanEvent.dayKeyDate(saved.startDayKey) {
+                        displayedMonth = savedMonth
+                    }
+                }
+            )
+        }
+        .fullScreenCover(item: $selectedPlanRoute, onDismiss: {
+            if let route = pendingDayRouteAfterPlan {
+                pendingDayRouteAfterPlan = nil
+                displayedMonth = route.date
+                selectedRoute = route
+            }
+        }) { route in
+            PlanEventDetailSheet(
+                planID: route.id,
+                onFocusMapCoordinate: onFocusMapCoordinate,
+                onOpenDayDate: { targetDate in
+                    pendingDayRouteAfterPlan = SelectedDayRoute(date: targetDate, startAdding: false)
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func calendarPlansSection(
+        monthNumber: Int,
+        currentFirst: Date,
+        monthPlans: [PairPlanEvent],
+        isCurrentMonth: Bool
+    ) -> some View {
+        let todayKey = EncounterCalendarAggregator.dayKey(for: .now)
+        let futureUpcoming = isCurrentMonth
+            ? model.upcomingPlanEvents().filter { upcoming in
+                !monthPlans.contains(where: { $0.id == upcoming.id })
+            }
+            : []
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("\(monthNumber)月の予定・旅行")
+                    .font(FoamFont.bold(16, relativeTo: .headline))
+                    .foregroundStyle(FoamTheme.ink)
+                Spacer()
+                Button {
+                    planEditorRoute = PlanEditorRoute(
+                        existingPlan: nil,
+                        initialDate: isCurrentMonth ? .now : currentFirst
+                    )
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("予定を追加")
+                            .font(FoamFont.bold(12, relativeTo: .caption))
+                    }
+                    .foregroundStyle(FoamTheme.ink)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.86), in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(Color.white, lineWidth: 1)
+                    }
+                }
+                .buttonStyle(CalendarBounceButtonStyle())
+            }
+
+            if monthPlans.isEmpty {
+                Button {
+                    planEditorRoute = PlanEditorRoute(
+                        existingPlan: nil,
+                        initialDate: isCurrentMonth ? .now : currentFirst
+                    )
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "airplane.departure")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(FoamTheme.warmAccent)
+                            .frame(width: 34, height: 34)
+                            .background(Color.white.opacity(0.84), in: Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("この月の予定・旅行はまだありません")
+                                .font(FoamFont.bold(13.5, relativeTo: .subheadline))
+                                .foregroundStyle(FoamTheme.ink)
+                            Text("旅行やおでかけを追加すると、写真が自動でアルバムにまとまります")
+                                .font(FoamFont.regular(11.5, relativeTo: .caption))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.64))
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(FoamTheme.warmAccent)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        SoapBubbleSurface(
+                            cornerStyle: .roundedRect(20),
+                            prominence: .standard,
+                            isTogether: model.isTogetherNow,
+                            seed: 8.1,
+                            wobbleScale: 0.25,
+                            animated: false,
+                            milkyFillOpacity: 0.72
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(monthPlans) { plan in
+                        calendarPlanCard(plan: plan, todayKey: todayKey)
+                    }
+                }
+            }
+
+            if !futureUpcoming.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("これからの予定")
+                        .font(FoamFont.bold(14, relativeTo: .subheadline))
+                        .foregroundStyle(FoamTheme.ink.opacity(0.72))
+                        .padding(.top, 4)
+
+                    ForEach(futureUpcoming.prefix(3)) { plan in
+                        calendarPlanCard(plan: plan, todayKey: todayKey)
+                    }
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private func calendarPlanCard(plan: PairPlanEvent, todayKey: String) -> some View {
+        let mediaCount = model.mediaAttachments(for: plan).count
+        let status = plan.lifecycleStatus(asOfDayKey: todayKey)
+        let badgeText: String = switch status {
+        case .upcoming:
+            if let days = plan.daysUntilStart(asOfDayKey: todayKey) {
+                days <= 1 ? "明日" : "あと\(days)日"
+            } else {
+                "予定"
+            }
+        case .ongoing: "開催中"
+        case .past: mediaCount > 0 ? "写真 \(mediaCount)件" : "おもいで"
+        }
+
+        Button {
+            selectedPlanRoute = PlanDetailRoute(id: plan.id)
+        } label: {
+            HStack(spacing: 11) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: plan.icon.gradientColors,
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 38, height: 38)
+                    Image(systemName: plan.icon.symbolName)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(plan.title)
+                        .font(FoamFont.bold(14.5, relativeTo: .subheadline))
+                        .foregroundStyle(FoamTheme.ink)
+                        .lineLimit(1)
+
+                    HStack(spacing: 6) {
+                        Text(plan.formattedDateRange)
+                            .font(FoamFont.bold(11.5, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.68))
+                        if !plan.checklist.isEmpty {
+                            let done = plan.checklist.count { $0.isDone }
+                            Text("・チェック \(done)/\(plan.checklist.count)")
+                                .font(FoamFont.medium(11, relativeTo: .caption2))
+                                .foregroundStyle(FoamTheme.ink.opacity(0.55))
+                        }
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                Text(badgeText)
+                    .font(FoamFont.bold(11, relativeTo: .caption2))
+                    .foregroundStyle(status == .past && mediaCount == 0 ? FoamTheme.ink.opacity(0.70) : .white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(
+                        status == .past && mediaCount == 0
+                            ? Color.white.opacity(0.84)
+                            : (status == .ongoing ? FoamTheme.warmAccent : plan.icon.accentColor),
+                        in: Capsule()
+                    )
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(FoamTheme.ink.opacity(0.40))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                SoapBubbleSurface(
+                    cornerStyle: .roundedRect(20),
+                    prominence: .standard,
+                    isTogether: model.isTogetherNow,
+                    seed: Double(abs(plan.id.hashValue % 19)) * 0.4 + 2.0,
+                    wobbleScale: 0.25,
+                    animated: false,
+                    milkyFillOpacity: 0.78
+                )
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func consumePendingRouteIfNeeded() {
@@ -348,6 +586,7 @@ private struct CalendarMonthPageView: View {
         let leadingBlanks = calendar.component(.weekday, from: monthFirst) - 1
         let daysCount = calendar.range(of: .day, in: .month, for: monthFirst)?.count ?? 0
         let summaries = model.daySummaries(forMonth: monthFirst)
+        let monthPlans = model.planEvents(overlappingMonth: monthFirst)
         let colWidth = max(40, gridWidth / 7)
 
         ZStack(alignment: .top) {
@@ -409,7 +648,9 @@ private struct CalendarMonthPageView: View {
                 }
                 ForEach(1...max(1, daysCount), id: \.self) { day in
                     if let date = calendar.date(byAdding: .day, value: day - 1, to: monthFirst) {
-                        let summary = summaries[EncounterCalendarAggregator.dayKey(for: date)]
+                        let dayKey = EncounterCalendarAggregator.dayKey(for: date)
+                        let summary = summaries[dayKey]
+                        let dayPlans = monthPlans.filter { $0.contains(dayKey: dayKey) }
                         let badges = calendarBadges(on: date)
                         let details = [
                             summary.map { FoamTheme.duration($0.totalRecordedSeconds) },
@@ -420,10 +661,10 @@ private struct CalendarMonthPageView: View {
                             guard canTapDay() else { return }
                             onSelectDay(date)
                         } label: {
-                            CalendarDayLabelCell(day: day, summary: summary, badges: badges)
+                            CalendarDayLabelCell(day: day, summary: summary, badges: badges, plans: dayPlans)
                         }
                         .accessibilityLabel(Text(date, format: .dateTime.month().day()))
-                        .accessibilityValue((details + badges.map(\.title)).joined(separator: "、"))
+                        .accessibilityValue((details + dayPlans.map(\.title) + badges.map(\.title)).joined(separator: "、"))
                     }
                 }
             }
@@ -623,16 +864,23 @@ private struct CalendarDayLabelCell: View {
     let day: Int
     let summary: DaySummary?
     let badges: [ResolvedSpecialDayBadge]
+    let plans: [PairPlanEvent]
 
     var body: some View {
         let hasRecord = (summary?.bubbleIntensity ?? .none) != .none
+        let hasPlan = !plans.isEmpty
+        let hasMemo = summary?.memo?.isEmpty == false
         let offsets = badgeOffsets
         let symbolSize: CGFloat = badges.count <= 1 ? 10.5 : 9.0
 
         ZStack {
             Text("\(day)")
-                .font(hasRecord ? FoamFont.bold(16.5, relativeTo: .headline) : FoamFont.regular(15, relativeTo: .headline))
-                .foregroundStyle(hasRecord ? FoamTheme.ink : FoamTheme.ink.opacity(0.30))
+                .font((hasRecord || hasPlan) ? FoamFont.bold(16.5, relativeTo: .headline) : FoamFont.regular(15, relativeTo: .headline))
+                .foregroundStyle(
+                    hasRecord
+                        ? FoamTheme.ink
+                        : FoamTheme.ink.opacity(hasPlan ? 0.72 : 0.30)
+                )
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
@@ -648,11 +896,21 @@ private struct CalendarDayLabelCell: View {
                     .frame(width: 7, height: 7)
                     .offset(x: 13, y: -13)
             }
-            if let memo = summary?.memo, !memo.isEmpty {
-                Circle()
-                    .fill(Color.purple.opacity(0.65))
-                    .frame(width: 5, height: 5)
-                    .offset(y: 16)
+
+            if hasPlan || hasMemo {
+                HStack(spacing: 3) {
+                    if let firstPlan = plans.first {
+                        Capsule()
+                            .fill(firstPlan.icon.accentColor)
+                            .frame(width: 14, height: 3.5)
+                    }
+                    if hasMemo {
+                        Circle()
+                            .fill(Color.purple.opacity(0.65))
+                            .frame(width: 5, height: 5)
+                    }
+                }
+                .offset(y: 17)
             }
         }
         .frame(maxWidth: .infinity)

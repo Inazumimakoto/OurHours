@@ -140,6 +140,7 @@ struct SoapBubbleSurface: View {
     var animated: Bool = true
     var externalPhase: Double? = nil
     var squish: Double = 0
+    var milkyFillOpacity: Double = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -177,6 +178,23 @@ struct SoapBubbleSurface: View {
                 with: .color(FoamTheme.ink.opacity(isVivid ? 0.06 : 0.04)),
                 style: StrokeStyle(lineWidth: 2.8, lineJoin: .round)
             )
+
+            // 1.5 Optional milky interior fill applied inside the single organic bubble contour
+            if milkyFillOpacity > 0 {
+                let clampedMilky = min(1.0, max(0.0, milkyFillOpacity))
+                let milkyTint = isTogether
+                    ? Color(red: 1.0, green: 0.96, blue: 0.98)
+                    : Color(red: 0.95, green: 0.98, blue: 1.0)
+                let milkyShading: GraphicsContext.Shading = .linearGradient(
+                    Gradient(colors: [
+                        Color.white.opacity(clampedMilky),
+                        milkyTint.opacity(clampedMilky * 0.96)
+                    ]),
+                    startPoint: .zero,
+                    endPoint: CGPoint(x: size.width, y: size.height)
+                )
+                context.fill(shapePath, with: milkyShading)
+            }
 
             // 2. Luminous pastel translucent interior veil
             let pastelTint = isTogether

@@ -159,6 +159,8 @@ struct DayDetailSheet: View {
     let date: Date
     let startAdding: Bool
     let focusEncounterID: UUID?
+    let backAccessibilityLabel: String
+    let onFocusMapCoordinate: ((GeoCoordinate) -> Void)?
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -178,16 +180,27 @@ struct DayDetailSheet: View {
     @State private var zoomFocusMinute: Double = 810.0
     @State private var didHandleInitialAdd = false
     @State private var didHandleInitialFocus = false
+    @State private var selectedPlanRoute: PlanDetailRoute?
+    @State private var pendingMapCoordinateAfterPlan: GeoCoordinate?
+    @State private var pendingDayDateAfterPlan: Date?
 
     private let timelinePadTop: CGFloat = 22
     private let timelinePadBottom: CGFloat = 26
     private let unifiedAxisX: CGFloat = 56
     private let labelLeadX: CGFloat = 76
 
-    init(date: Date, startAdding: Bool = false, focusEncounterID: UUID? = nil) {
+    init(
+        date: Date,
+        startAdding: Bool = false,
+        focusEncounterID: UUID? = nil,
+        backAccessibilityLabel: String = "カレンダーに戻る",
+        onFocusMapCoordinate: ((GeoCoordinate) -> Void)? = nil
+    ) {
         self.date = date
         self.startAdding = startAdding
         self.focusEncounterID = focusEncounterID
+        self.backAccessibilityLabel = backAccessibilityLabel
+        self.onFocusMapCoordinate = onFocusMapCoordinate
         _currentDate = State(initialValue: date)
     }
 
@@ -217,69 +230,113 @@ struct DayDetailSheet: View {
             let denseMinimumHeight = items.count > 1 ? CGFloat(items.count - 1) * 32.0 + 40.0 : 0
             let axisHeight = max(availableAxisHeight, denseMinimumHeight)
 
-            ZStack(alignment: .bottom) {
-                FoamTheme.sky(together: model.isTogetherNow)
-                    .ignoresSafeArea()
-                FoamAmbientBackgroundView(isTogether: model.isTogetherNow, softened: true)
-                    .ignoresSafeArea()
+            ScrollViewReader { scrollProxy in
+                ZStack(alignment: .bottom) {
+                    FoamTheme.sky(together: model.isTogetherNow)
+                        .ignoresSafeArea()
+                    FoamAmbientBackgroundView(isTogether: model.isTogetherNow, softened: true)
+                        .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    topBar(currentDayKey: day.dayKey, day: day, dayStart: activeDayStart)
-                        .padding(.horizontal, 18)
-                        .padding(.top, 10)
-                        .padding(.bottom, 4)
+                    VStack(spacing: 0) {
+                        topBar(currentDayKey: day.dayKey, day: day, dayStart: activeDayStart)
+                            .padding(.horizontal, 18)
+                            .padding(.top, 10)
+                            .padding(.bottom, 4)
 
-                    ScrollView {
-                        VStack(spacing: 12) {
-                            heroDurationCloud(day: day)
-                                .padding(.top, 2)
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                heroDurationCloud(day: day)
+                                    .padding(.top, 2)
 
-                            if !badges.isEmpty {
-                                SpecialDayPillsRow(badges: badges)
+                                if !badges.isEmpty {
+                                    SpecialDayPillsRow(badges: badges)
+                                }
+
+                                dayPlansSection(dayKey: day.dayKey)
+
+                                memoCloudCard(dayKey: day.dayKey)
+
+                                DayPhotosSection(dayKey: day.dayKey) { coord in
+                                    commitMemoIfNeeded(dayKey: day.dayKey)
+                                    dismiss()
+                                    onFocusMapCoordinate?(coord)
+                                }
+
+                                DayPlaceTagsSection(dayKey: day.dayKey) { coord in
+                                    commitMemoIfNeeded(dayKey: day.dayKey)
+                                    dismiss()
+                                    onFocusMapCoordinate?(coord)
+                                }
+
+                                if let dragStatus = dragStatusInfo(for: activeDrag) {
+                                    Text(dragStatus.text)
+                                        .font(FoamFont.bold(12.5, relativeTo: .caption))
+                                        .foregroundStyle(dragStatus.isMerging ? FoamTheme.warmAccent : FoamTheme.ink.opacity(0.78))
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 6)
+                                        .background(Color.white.opacity(0.92), in: Capsule())
+                                        .overlay {
+                                            Capsule().strokeBorder(
+                                                dragStatus.isMerging ? FoamTheme.warmAccent.opacity(0.45) : Color.white,
+                                                lineWidth: 1.2
+                                            )
+                                        }
+                                        .shadow(color: FoamTheme.ink.opacity(0.08), radius: 6, y: 2)
+                                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                                } else if inlineEditor == nil, let pending = pendingDragAdjustment {
+                                    pendingAdjustmentBar(pending: pending)
+                                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                                }
+
+                                timelineViewport(
+                                    items: items,
+                                    day: day,
+                                    dayStart: activeDayStart,
+                                    scale: effectiveScale,
+                                    axisHeight: axisHeight
+                                )
+                                .id("dayTimelineSection")
+
+                                if let error = model.journalError {
+                                    Text(error)
+                                        .font(FoamFont.medium(13))
+                                        .foregroundStyle(.red)
+                                        .padding(.horizontal, 8)
+                                }
                             }
-
-                            memoCloudCard(dayKey: day.dayKey)
-
-                            if let dragStatus = dragStatusInfo(for: activeDrag) {
-                                Text(dragStatus.text)
-                                    .font(FoamFont.bold(12.5, relativeTo: .caption))
-                                    .foregroundStyle(dragStatus.isMerging ? FoamTheme.warmAccent : FoamTheme.ink.opacity(0.78))
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 6)
-                                    .background(Color.white.opacity(0.92), in: Capsule())
-                                    .overlay {
-                                        Capsule().strokeBorder(
-                                            dragStatus.isMerging ? FoamTheme.warmAccent.opacity(0.45) : Color.white,
-                                            lineWidth: 1.2
-                                        )
+                            .padding(.horizontal, 18)
+                            .padding(.bottom, 54)
+                        }
+                        .scrollDisabled(activeDrag != nil)
+                        .scrollDismissesKeyboard(.interactively)
+                    }
+                }
+                .onAppear {
+                    if let focusID = focusEncounterID, !didHandleInitialFocus {
+                        didHandleInitialFocus = true
+                        let targetID = "\(focusID.uuidString)_\(day.dayKey)"
+                        let resolvedFocusID: String?
+                        if day.slices.contains(where: { $0.id == targetID }) {
+                            resolvedFocusID = targetID
+                        } else if let fallback = day.slices.first(where: { $0.status == .unknownEnd }) {
+                            resolvedFocusID = fallback.id
+                        } else {
+                            resolvedFocusID = nil
+                        }
+                        if let resolvedFocusID {
+                            selectedItemID = resolvedFocusID
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(90))
+                                if reduceMotion {
+                                    scrollProxy.scrollTo("focusedTimelineAnchor", anchor: .center)
+                                } else {
+                                    withAnimation(.easeInOut(duration: 0.35)) {
+                                        scrollProxy.scrollTo("focusedTimelineAnchor", anchor: .center)
                                     }
-                                    .shadow(color: FoamTheme.ink.opacity(0.08), radius: 6, y: 2)
-                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                            } else if inlineEditor == nil, let pending = pendingDragAdjustment {
-                                pendingAdjustmentBar(pending: pending)
-                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                            }
-
-                            timelineViewport(
-                                items: items,
-                                day: day,
-                                dayStart: activeDayStart,
-                                scale: effectiveScale,
-                                axisHeight: axisHeight
-                            )
-
-                            if let error = model.journalError {
-                                Text(error)
-                                    .font(FoamFont.medium(13))
-                                    .foregroundStyle(.red)
-                                    .padding(.horizontal, 8)
+                                }
                             }
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.bottom, 54)
                     }
-                    .scrollDisabled(activeDrag != nil)
-                    .scrollDismissesKeyboard(.interactively)
                 }
             }
         }
@@ -305,21 +362,13 @@ struct DayDetailSheet: View {
             }
         }
         .onAppear {
-            let initial = day.memo ?? ""
+            let initial = model.localMemoText(forDayKey: day.dayKey)
             memo = initial
             lastSyncedMemo = initial
             if startAdding && !didHandleInitialAdd {
                 didHandleInitialAdd = true
                 Task { @MainActor in
                     openDraftEditor(day: day, dayStart: activeDayStart)
-                }
-            } else if let focusID = focusEncounterID, !didHandleInitialFocus {
-                didHandleInitialFocus = true
-                let targetID = "\(focusID.uuidString)_\(day.dayKey)"
-                if day.slices.contains(where: { $0.id == targetID }) {
-                    selectedItemID = targetID
-                } else if let fallback = day.slices.first(where: { $0.status == .unknownEnd }) {
-                    selectedItemID = fallback.id
                 }
             }
         }
@@ -328,15 +377,82 @@ struct DayDetailSheet: View {
                 commitMemoIfNeeded(dayKey: day.dayKey)
             }
         }
-        .onChange(of: day.memo) { _, newValue in
-            let updated = newValue ?? ""
+        .onChange(of: model.localMemoText(forDayKey: day.dayKey)) { _, newValue in
             if !isMemoFocused && normalizedMemo == lastSyncedMemo {
-                memo = updated
+                memo = newValue
             }
-            lastSyncedMemo = updated
+            lastSyncedMemo = newValue
         }
         .onDisappear {
             commitMemoIfNeeded(dayKey: EncounterCalendarAggregator.dayKey(for: currentDate))
+        }
+        .fullScreenCover(item: $selectedPlanRoute, onDismiss: {
+            if let coord = pendingMapCoordinateAfterPlan {
+                pendingMapCoordinateAfterPlan = nil
+                commitMemoIfNeeded(dayKey: EncounterCalendarAggregator.dayKey(for: currentDate))
+                dismiss()
+                onFocusMapCoordinate?(coord)
+            } else if let targetDate = pendingDayDateAfterPlan {
+                pendingDayDateAfterPlan = nil
+                jumpToDate(targetDate, from: EncounterCalendarAggregator.dayKey(for: currentDate))
+            }
+        }) { route in
+            PlanEventDetailSheet(
+                planID: route.id,
+                onFocusMapCoordinate: { coord in
+                    pendingMapCoordinateAfterPlan = coord
+                },
+                onOpenDayDate: { targetDate in
+                    pendingDayDateAfterPlan = targetDate
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func dayPlansSection(dayKey: String) -> some View {
+        let dayPlans = model.planEvents(forDayKey: dayKey)
+        if !dayPlans.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(dayPlans) { plan in
+                        let mediaCount = model.mediaAttachments(for: plan).count
+                        Button {
+                            isMemoFocused = false
+                            selectedPlanRoute = PlanDetailRoute(id: plan.id)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: plan.icon.symbolName)
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(plan.icon.accentColor)
+                                Text(plan.title)
+                                    .font(FoamFont.bold(12.5, relativeTo: .caption))
+                                    .foregroundStyle(FoamTheme.ink)
+                                    .lineLimit(1)
+                                if mediaCount > 0 {
+                                    Text("\(mediaCount)")
+                                        .font(FoamFont.bold(10.5, relativeTo: .caption2))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(plan.icon.accentColor, in: Capsule())
+                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9.5, weight: .bold))
+                                    .foregroundStyle(FoamTheme.ink.opacity(0.45))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(Color.white.opacity(0.84), in: Capsule())
+                            .overlay {
+                                Capsule().strokeBorder(Color.white, lineWidth: 1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
         }
     }
 
@@ -345,7 +461,7 @@ struct DayDetailSheet: View {
     @ViewBuilder
     private func topBar(currentDayKey: String, day: DaySummary, dayStart: Date) -> some View {
         HStack {
-            FoamRoundIconButton(accessibilityLabel: "カレンダーに戻る") {
+            FoamRoundIconButton(accessibilityLabel: backAccessibilityLabel) {
                 isMemoFocused = false
                 inlineEditor = nil
                 pendingDragAdjustment = nil
@@ -478,40 +594,76 @@ struct DayDetailSheet: View {
 
     @ViewBuilder
     private func memoCloudCard(dayKey: String) -> some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            TextField(
-                "",
-                text: $memo,
-                prompt: Text("この日のひとこと…")
-                    .foregroundStyle(FoamTheme.ink.opacity(0.46)),
-                axis: .vertical
-            )
-            .font(FoamFont.medium(15, relativeTo: .body))
-            .foregroundStyle(FoamTheme.ink)
-            .lineLimit(2...5)
-            .focused($isMemoFocused)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                UserAvatarView(
+                    image: model.localAvatarImage,
+                    bubbleColor: model.localBubbleColor,
+                    size: 30
+                )
 
-            if normalizedMemo != lastSyncedMemo {
-                Button {
-                    commitMemoIfNeeded(dayKey: dayKey)
-                    isMemoFocused = false
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                } label: {
-                    Text("保存")
-                        .font(FoamFont.bold(12, relativeTo: .caption))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(FoamTheme.ink, in: Capsule())
+                TextField(
+                    "",
+                    text: $memo,
+                    prompt: Text("ひとこと…")
+                        .foregroundStyle(FoamTheme.ink.opacity(0.46)),
+                    axis: .vertical
+                )
+                .font(FoamFont.medium(15, relativeTo: .body))
+                .foregroundStyle(FoamTheme.ink)
+                .lineLimit(1...5)
+                .focused($isMemoFocused)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+
+                if normalizedMemo != lastSyncedMemo {
+                    Button {
+                        commitMemoIfNeeded(dayKey: dayKey)
+                        isMemoFocused = false
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    } label: {
+                        Text("保存")
+                            .font(FoamFont.bold(12, relativeTo: .caption))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(FoamTheme.ink, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
                 }
-                .buttonStyle(.plain)
-                .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            }
+
+            if model.snapshot.isPaired {
+                Divider()
+                    .overlay(FoamTheme.ink.opacity(0.08))
+
+                let partnerText = model.partnerMemoText(forDayKey: dayKey)
+                HStack(alignment: .top, spacing: 10) {
+                    UserAvatarView(
+                        image: model.partnerAvatarImage,
+                        bubbleColor: model.partnerBubbleColor ?? .sakuraPink,
+                        size: 30
+                    )
+
+                    if let partnerText, !partnerText.isEmpty {
+                        Text(partnerText)
+                            .font(FoamFont.medium(15, relativeTo: .body))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.86))
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                    } else {
+                        Text("まだメモがないよ")
+                            .font(FoamFont.medium(14, relativeTo: .subheadline))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.36))
+                            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                    }
+                }
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background {
             SoapBubbleSurface(
                 cornerStyle: .roundedRect(22),
@@ -599,6 +751,19 @@ struct DayDetailSheet: View {
                         containerSize: geo.size,
                         items: items
                     )
+                }
+
+                if let focusedItem = items.first(where: { $0.id == activeSelectedID }) {
+                    let focusedY = rawCenterY(for: focusedItem, scale: scale, axisHeight: axisHeight)
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: max(0, focusedY - 24))
+                        Color.clear.frame(height: 48).id("focusedTimelineAnchor")
+                        Spacer(minLength: 0)
+                    }
+                    .allowsHitTesting(false)
+                } else {
+                    Color.clear.frame(height: 48).id("focusedTimelineAnchor")
+                        .allowsHitTesting(false)
                 }
             }
         }
@@ -2336,6 +2501,11 @@ struct DayDetailSheet: View {
     }
 
     private func moveDay(by offset: Int, from currentDayKey: String) {
+        guard let nextDate = Calendar.current.date(byAdding: .day, value: offset, to: currentDate) else { return }
+        jumpToDate(nextDate, from: currentDayKey)
+    }
+
+    private func jumpToDate(_ nextDate: Date, from currentDayKey: String) {
         commitMemoIfNeeded(dayKey: currentDayKey)
         isMemoFocused = false
         inlineEditor = nil
@@ -2343,12 +2513,12 @@ struct DayDetailSheet: View {
         selectedItemID = nil
         activeDrag = nil
         zoomFactor = 1.0
-        guard let nextDate = Calendar.current.date(byAdding: .day, value: offset, to: currentDate) else { return }
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
             currentDate = nextDate
         }
-        let nextMemo = model.daySummary(for: nextDate).memo ?? ""
+        let nextDayKey = EncounterCalendarAggregator.dayKey(for: nextDate)
+        let nextMemo = model.localMemoText(forDayKey: nextDayKey)
         memo = nextMemo
         lastSyncedMemo = nextMemo
     }
@@ -2357,7 +2527,7 @@ struct DayDetailSheet: View {
         guard normalizedMemo != lastSyncedMemo else { return }
         model.saveMemo(dayKey: dayKey, text: memo)
         if model.journalError == nil {
-            let saved = model.journal.dailyMemos[dayKey]?.text ?? ""
+            let saved = model.localMemoText(forDayKey: dayKey)
             memo = saved
             lastSyncedMemo = saved
         }

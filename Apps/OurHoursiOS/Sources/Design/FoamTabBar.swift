@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum FoamTab: CaseIterable { case home, calendar }
+enum FoamTab: CaseIterable { case home, calendar, gallery, map }
 
 struct FoamTabBar: View {
     @Binding var selected: FoamTab
@@ -12,39 +12,32 @@ struct FoamTabBar: View {
     var body: some View {
         HStack(spacing: 0) {
             ForEach(FoamTab.allCases, id: \.self) { tab in
-                let home = tab == .home
                 let active = selected == tab
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     pressDateByTab[tab] = .now
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.76)) { selected = tab }
-                    onBurst(home ? 0.28 : 0.72)
+                    onBurst(burstOrigin(for: tab))
                 } label: {
                     VStack(spacing: 1) {
-                        Group {
-                            if home {
-                                FoamHomeIcon(active: active)
-                            } else {
-                                FoamCalendarIcon(active: active)
-                            }
-                        }
-                        .scaleEffect(0.84)
-                        Text(home ? "ホーム" : "カレンダー")
+                        tabIcon(for: tab, active: active)
+                            .scaleEffect(0.84)
+                        Text(tabTitle(for: tab))
                             .font(FoamFont.bold(10.5, relativeTo: .caption2))
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                             .foregroundStyle(active ? FoamTheme.ink.opacity(0.90) : FoamTheme.ink.opacity(0.54))
                     }
-                    .padding(.horizontal, 18)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 6)
-                    .frame(minWidth: 92, minHeight: 48)
+                    .frame(minWidth: 64, minHeight: 48)
                     .scaleEffect(active ? 0.95 : 1.0)
                     .offset(y: active ? 1.5 : 0)
                     .background {
                         OrganicFoamPressedHollow(
                             active: active,
                             isTogether: isTogether,
-                            seed: home ? 0.0 : 1.7,
+                            seed: tabSeed(for: tab),
                             pressDate: pressDateByTab[tab] ?? .distantPast
                         )
                     }
@@ -56,8 +49,45 @@ struct FoamTabBar: View {
                 .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 10)
         .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private func tabIcon(for tab: FoamTab, active: Bool) -> some View {
+        switch tab {
+        case .home: FoamHomeIcon(active: active)
+        case .calendar: FoamCalendarIcon(active: active)
+        case .gallery: FoamGalleryIcon(active: active)
+        case .map: FoamMapIcon(active: active)
+        }
+    }
+
+    private func tabTitle(for tab: FoamTab) -> String {
+        switch tab {
+        case .home: "ホーム"
+        case .calendar: "カレンダー"
+        case .gallery: "アルバム"
+        case .map: "マップ"
+        }
+    }
+
+    private func burstOrigin(for tab: FoamTab) -> CGFloat {
+        switch tab {
+        case .home: 0.14
+        case .calendar: 0.38
+        case .gallery: 0.62
+        case .map: 0.86
+        }
+    }
+
+    private func tabSeed(for tab: FoamTab) -> Double {
+        switch tab {
+        case .home: 0.0
+        case .calendar: 1.7
+        case .gallery: 2.6
+        case .map: 3.4
+        }
     }
 }
 

@@ -64,6 +64,21 @@ private extension BubbleColorTheme {
         case .mint: Color(red: 0.20, green: 0.54, blue: 0.43)
         case .honeyYellow: Color(red: 0.68, green: 0.45, blue: 0.14)
         case .coral: Color(red: 0.76, green: 0.33, blue: 0.28)
+        case .peachCream: Color(red: 0.76, green: 0.41, blue: 0.33)
+        case .matcha: Color(red: 0.27, green: 0.49, blue: 0.24)
+        case .sodaPop: Color(red: 0.16, green: 0.50, blue: 0.66)
+        case .berryRose: Color(red: 0.62, green: 0.21, blue: 0.40)
+        case .sunsetGlow: Color(red: 0.74, green: 0.34, blue: 0.46)
+        case .oceanDeep: Color(red: 0.15, green: 0.37, blue: 0.66)
+        case .moonlight: Color(red: 0.34, green: 0.39, blue: 0.70)
+        case .champagneGold: Color(red: 0.66, green: 0.46, blue: 0.15)
+        case .auroraPrism: Color(red: 0.46, green: 0.44, blue: 0.74)
+        case .snowCrystal: Color(red: 0.38, green: 0.56, blue: 0.78)
+        case .santaRuby: Color(red: 0.76, green: 0.14, blue: 0.24)
+        case .chocoMocha: Color(red: 0.52, green: 0.33, blue: 0.22)
+        case .crimsonDawn: Color(red: 0.78, green: 0.18, blue: 0.26)
+        case .easterPastel: Color(red: 0.64, green: 0.44, blue: 0.72)
+        case .milkyWay: Color(red: 0.22, green: 0.30, blue: 0.70)
         }
     }
 }

@@ -8,20 +8,52 @@ import UIKit
 struct OurHoursiOSApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showLaunchSplash = {
+        #if DEBUG
+        return ScreenshotScene.current == nil
+        #else
+        return true
+        #endif
+    }()
+    @State private var launchSplashID = UUID()
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if let model = delegate.appModel {
-                    RootFoamView(appModel: model)
-                } else {
-                    ProgressView()
+            ZStack {
+                Group {
+                    if let model = delegate.appModel {
+                        #if DEBUG
+                        RootFoamView(
+                            appModel: model,
+                            activeDebugPreset: delegate.activeDebugPreset,
+                            onSelectDebugPreset: { delegate.selectDebugPreset($0) },
+                            onReplayLaunchAnimation: {
+                                launchSplashID = UUID()
+                                showLaunchSplash = true
+                            }
+                        )
+                        .id(delegate.modelSessionID)
+                        #else
+                        RootFoamView(appModel: model)
+                        #endif
+                    } else {
+                        Color("LaunchBackground")
+                            .ignoresSafeArea()
+                    }
+                }
+
+                if showLaunchSplash, delegate.appModel != nil {
+                    LaunchSplashOverlayView {
+                        showLaunchSplash = false
+                    }
+                    .id(launchSplashID)
+                    .zIndex(10)
                 }
             }
             .preferredColorScheme(.light)
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
-                    delegate.appModel?.handleForegroundActivation()
+                    delegate.handleForegroundActivation()
                 }
             }
         }
@@ -31,6 +63,12 @@ struct OurHoursiOSApp: App {
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
     @Published private(set) var appModel: AppModel?
+    private var liveAppModel: AppModel?
+    #if DEBUG
+    private var activePreviewHandle: DebugPreviewHandle?
+    @Published private(set) var activeDebugPreset: DebugPreviewPreset?
+    @Published private(set) var modelSessionID = UUID()
+    #endif
 
     func application(
         _ application: UIApplication,
@@ -54,10 +92,33 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             model.handleBackgroundLocationLaunch()
         }
         appModel = model
+        liveAppModel = model
         ShareSceneDelegate.appModel = model
         application.registerForRemoteNotifications()
         return true
     }
+
+    func handleForegroundActivation() {
+        liveAppModel?.handleForegroundActivation()
+    }
+
+    #if DEBUG
+    func selectDebugPreset(_ preset: DebugPreviewPreset?) {
+        guard ScreenshotScene.current == nil else { return }
+        activePreviewHandle?.cleanup()
+        activePreviewHandle = nil
+        if let preset {
+            let handle = DebugPreviewFactory.makeHandle(for: preset)
+            activePreviewHandle = handle
+            activeDebugPreset = preset
+            appModel = handle.model
+        } else {
+            activeDebugPreset = nil
+            appModel = liveAppModel
+        }
+        modelSessionID = UUID()
+    }
+    #endif
 
     func application(
         _ application: UIApplication,
@@ -85,14 +146,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
             finish(.failed)
         }
         Task { @MainActor in
-            let result = await appModel?.handleRemoteCloudKitPush() ?? .noData
+            let result = await liveAppModel?.handleRemoteCloudKitPush() ?? .noData
             timeout.cancel()
             finish(result)
         }
     }
 
     func application(_ application: UIApplication, userDidAcceptCloudKitShareWith metadata: CKShare.Metadata) {
-        appModel?.handleAcceptedExternalShare(metadata)
+        liveAppModel?.handleAcceptedExternalShare(metadata)
     }
 
     func application(

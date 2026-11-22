@@ -48,9 +48,16 @@ struct HomeView: View {
                 isTogether: model.isTogetherNow,
                 isPaired: model.snapshot.isPaired,
                 localColor: model.localBubbleColor,
-                partnerColor: model.partnerBubbleColor,
+                localExpression: model.localBubbleExpression,
+                localExpressionRotation: model.localBubbleExpressionRotation,
+                localDecorations: model.localBubbleDecorations,
+                partnerColor: model.effectivePartnerBubbleColor,
+                partnerExpression: model.effectivePartnerBubbleExpression,
+                partnerExpressionRotation: model.effectivePartnerBubbleExpressionRotation,
+                partnerDecorations: model.effectivePartnerBubbleDecorations,
                 activeSessionStartDate: model.activeSessionStartDate,
-                onTapBurst: onBurst
+                onTapBurst: onBurst,
+                onSecretPop: { model.recordSecretBubblePop() }
             )
             .zIndex(0)
             Spacer()
@@ -126,6 +133,14 @@ struct HomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
             referenceDate = .now
+        }
+        .task(id: model.isTogetherNow) {
+            guard model.isTogetherNow else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { break }
+                model.evaluateBubbleUnlocks(asOf: .now, allowNotification: true)
+            }
         }
     }
 }

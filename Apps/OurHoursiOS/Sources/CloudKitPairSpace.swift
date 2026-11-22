@@ -1,5 +1,6 @@
 import CloudKit
 import Foundation
+import os
 import OSLog
 import OurHoursCore
 
@@ -76,7 +77,10 @@ actor CloudKitPairSpace {
         var subscriptionVerified: Bool
     }
 
-    private static let logger = Logger(subsystem: "io.github.inazumimakoto.OurHours", category: "PairSpace")
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "io.github.inazumimakoto.OurHours",
+        category: "PairSpace"
+    )
     private static let signInMessage = "iCloud にサインインすると共有スペースを利用できます"
     private var cache: [CacheKey: CacheEntry] = [:]
     private var cacheGeneration = 0
@@ -485,12 +489,18 @@ actor CloudKitPairSpace {
         }
     }
 
+    private struct AssetUploadState: Sendable {
+        var recordError: (any Error)?
+        var resumed = false
+    }
+
     func saveEncryptedAsset(
         _ plaintext: Data,
         kind: PairAssetKind,
         assetID: UUID,
         config: PairConfiguration,
-        context: PairSpaceContext
+        context: PairSpaceContext,
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) async throws {
         let id = try assetRecordID(kind, assetID, config: config, context: context)
         let encrypted = try PairSpaceCrypto.encryptAssetData(plaintext, kind: kind, assetID: assetID, using: config)
@@ -503,7 +513,48 @@ actor CloudKitPairSpace {
         record["kind"] = kind.rawValue as CKRecordValue
         record["updatedAt"] = Date.now as CKRecordValue
         record["schemaVersion"] = NSNumber(value: 1)
-        try await Self.saveRecords([record], savePolicy: .allKeys, in: database(for: context.scope))
+
+        let db = database(for: context.scope)
+        guard let onProgress else {
+            try await Self.saveRecords([record], savePolicy: .allKeys, in: db)
+            return
+        }
+
+        let stateLock = OSAllocatedUnfairLock(initialState: AssetUploadState())
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            let operation = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)
+            operation.savePolicy = .allKeys
+            operation.isAtomic = false
+            operation.qualityOfService = .userInitiated
+            operation.perRecordProgressBlock = { _, progress in
+                onProgress(min(1.0, max(0.0, progress)))
+            }
+            operation.perRecordSaveBlock = { _, saveResult in
+                if case let .failure(error) = saveResult {
+                    stateLock.withLock { state in
+                        if state.recordError == nil || Self.isServerRecordChanged(error) {
+                            state.recordError = error
+                        }
+                    }
+                }
+            }
+            operation.modifyRecordsResultBlock = { result in
+                let decision: (shouldResume: Bool, result: Result<Void, any Error>) = stateLock.withLock { state in
+                    guard !state.resumed else { return (false, .success(())) }
+                    state.resumed = true
+                    if let recordError = state.recordError {
+                        return (true, .failure(recordError))
+                    }
+                    return (true, result)
+                }
+                guard decision.shouldResume else { return }
+                if case .success = decision.result {
+                    onProgress(1.0)
+                }
+                continuation.resume(with: decision.result)
+            }
+            db.add(operation)
+        }
     }
 
     func fetchEncryptedAsset(

@@ -125,8 +125,8 @@
       <ul>
         <li><strong>アプリを終了（タスクキル）しないでください</strong>：App スイッチャーから上にスワイプして完全終了すると、バックグラウンドの自動記録が止まります。通常通りホーム画面へ戻したままにしておくと安定します。</li>
         <li><strong>Bluetooth をオン・許可</strong>：設定アプリで OurHours の Bluetooth を許可してください。</li>
-        <li><strong>位置情報は「常に許可」（＋正確な位置情報）がおすすめ</strong>：ポケットやスリープ時など Bluetooth が途切れやすい場面の取りこぼしを、暗号化した滞在ログで補完します。地図や座標の画面表示はありません。</li>
-        <li><strong>iCloud にサインイン</strong>：記録・メモ・記念日・色テーマをパートナーと自動同期するために iCloud を使用します。</li>
+        <li><strong>位置情報は「常に許可」（＋正確な位置情報）がおすすめ</strong>：ポケットやスリープ時など Bluetooth が途切れやすい場面の取りこぼしを、暗号化した滞在ログで補完します。現在地のリアルタイム共有や、滞在ログの地図表示は行いません。</li>
+        <li><strong>iCloud にサインイン</strong>：記録・予定・メモ・記念日・アルバム・きせかえ設定をパートナーと自動同期するために iCloud を使用します。</li>
       </ul>
     </section>
 
@@ -134,7 +134,17 @@
       <h2>よくある質問（FAQ）</h2>
       <h3>Q. 相手に位置情報や現在地が見えてしまいませんか？</h3>
       <p>
-        見えません。地図表示やリアルタイム位置共有機能はなく、端末内で暗号化した滞在時間のみを突き合わせて「一緒にいた時間」の補完に使います。
+        見えません。リアルタイム位置共有機能はなく、自動記録補完用の滞在ログが地図に出ることもありません（端末内で暗号化した滞在時間を突き合わせて集計するだけです）。「思い出マップ」に表示されるのは、ふたりがアルバムや日別画面から明示的に追加した写真と場所タグのみです。
+      </p>
+
+      <h3>Q. 旅行アルバムや予定・持ち物リストはどう使いますか？</h3>
+      <p>
+        カレンダーのトップから旅行やデートの予定を追加し、「やりたいこと」と「持ち物」を分けて登録できます。予定の期間中に撮影した写真・動画を追加すると、アルバムタブの「旅行・イベント別アルバム」に自動でまとまります。
+      </p>
+
+      <h3>Q. シャボン玉のきせかえアイテムはどうやって増えますか？</h3>
+      <p>
+        ホーム左上のきせかえボタンから色・表情・メイク・耳・あたま・ふく・めがね・ほくろを設定できます。一緒に過ごした累計時間、付き合った日数、そしてクリスマスやお正月・七夕など年間23の季節イベントに合わせて新しいアイテムが解放されます。
       </p>
 
       <h3>Q. 記録の時間をあとから直せますか？</h3>
@@ -162,7 +172,7 @@
     <section class="card" lang="en">
       <h2>Support Summary (English)</h2>
       <p>
-        To pair, one partner taps <strong>Create Invite QR</strong> and the other scans it. Keep OurHours open in the background (do not force-quit it from the App Switcher), keep Bluetooth enabled, sign in to iCloud for Private DB syncing, and optionally allow Always Location for reliable background coverage without showing any map or coordinates.
+        To pair, one partner taps <strong>Create Invite QR</strong> and the other scans it. Keep OurHours open in the background (do not force-quit it from the App Switcher), keep Bluetooth enabled, sign in to iCloud for Private DB syncing, and optionally allow Always Location for reliable background coverage (live coordinates and background proximity logs are never displayed on the Memory Map—only photos and place tags you add appear there).
       </p>
       <p>
         Contact: <a href="mailto:inazumimakoto@gmail.com">inazumimakoto@gmail.com</a> &middot; <a href="https://github.com/Inazumimakoto/OurHours/issues">GitHub Issues</a>

@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>OurHours</string>
+	<string>$(APP_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -31,9 +31,9 @@
 	<key>NSCameraUsageDescription</key>
 	<string>ペア設定用のQRコードを読み取るためにカメラを使用します。</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Bluetoothが届きにくいバックグラウンド中も「一緒にいる時間」の取りこぼしを防ぐため、暗号化した位置滞在ログをペア間でのみ突き合わせて記録補完に使用します（画面への地図や座標の表示は行いません）。</string>
+	<string>Bluetoothが届きにくいバックグラウンド中も「一緒にいる時間」の取りこぼしを防ぐため、暗号化した位置滞在ログをペア間でのみ突き合わせて記録補完に使用します（現在地のリアルタイム共有や、滞在ログの地図表示は行いません）。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Bluetoothの記録補完として、暗号化した位置滞在ログをペア間でのみ突き合わせて「一緒にいる時間」を正確に集計するために使用します（地図や座標の表示は行いません）。</string>
+	<string>Bluetoothの記録補完として、暗号化した位置滞在ログをペア間でのみ突き合わせて「一緒にいる時間」を正確に集計するために使用します（現在地のリアルタイム共有や、滞在ログの地図表示は行いません）。</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>ZenMaruGothic-Regular.ttf</string>

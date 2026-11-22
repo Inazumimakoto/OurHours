@@ -147,7 +147,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("ふたりで一緒にいた時間を自動で残すアプリだよ！")
                     .font(FoamFont.bold(17, relativeTo: .headline))
-                Text("自動で記録するために Bluetooth と位置情報（常に）が必要なんだ。位置情報は Bluetooth の届かない時間を補うだけで、地図に出たり誰かに見られたりしないから安心してね。")
+                Text("自動で記録するために Bluetooth と位置情報（常に）が必要なんだ。位置情報は Bluetooth の届かない時間を補うだけで、現在地が地図に出たり誰かに見られたりしないから安心してね。")
                     .font(FoamFont.regular(15, relativeTo: .subheadline))
             }
             .fixedSize(horizontal: false, vertical: true)

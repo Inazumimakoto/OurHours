@@ -22,12 +22,24 @@ public final class JournalStore: Sendable {
 
     @discardableResult
     public func setRoleProfile(
-        role: PeerRole, bubbleColor: BubbleColorTheme, birthday: CalendarDateValue?
+        role: PeerRole,
+        bubbleColor: BubbleColorTheme,
+        birthday: CalendarDateValue?,
+        avatarAssetID: UUID? = nil,
+        expression: BubbleExpression = .classic,
+        expressionRotationPool: [BubbleExpression] = [],
+        decorations: BubbleDecorationLoadout = .none
     ) throws -> JournalSnapshot {
         try modify { snapshot in
             let ts = Self.monotonicNow(after: snapshot.roleProfiles[role.shortCode]?.updatedAt ?? .distantPast)
             snapshot.roleProfiles[role.shortCode] = SyncedRoleProfile(
-                bubbleColor: bubbleColor, birthday: birthday, updatedAt: ts
+                bubbleColor: bubbleColor,
+                birthday: birthday,
+                avatarAssetID: avatarAssetID,
+                expression: expression,
+                expressionRotationPool: expressionRotationPool,
+                decorations: decorations,
+                updatedAt: ts
             )
         }
     }
@@ -133,7 +145,7 @@ public final class JournalStore: Sendable {
     }
 
     @discardableResult
-    public func setMemo(dayKey: String, text: String, pairID: UUID? = nil) throws -> JournalSnapshot {
+    public func setMemo(dayKey: String, text: String, pairID: UUID? = nil, authorRole: PeerRole? = nil) throws -> JournalSnapshot {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return try modify { snapshot in
             let existingMemoAt = snapshot.dailyMemos[dayKey]?.updatedAt ?? .distantPast
@@ -144,11 +156,245 @@ public final class JournalStore: Sendable {
                 snapshot.deletedMemoDays[dayKey] = ts
             } else {
                 snapshot.dailyMemos[dayKey] = DailyMemo(
-                    dayKey: dayKey, text: trimmed, updatedAt: ts, pairID: pairID ?? snapshot.dailyMemos[dayKey]?.pairID
+                    dayKey: dayKey, text: trimmed, updatedAt: ts,
+                    pairID: pairID ?? snapshot.dailyMemos[dayKey]?.pairID,
+                    authorRole: authorRole ?? snapshot.dailyMemos[dayKey]?.authorRole
                 )
                 snapshot.deletedMemoDays[dayKey] = nil
             }
         }
+    }
+
+    @discardableResult
+    public func setRoleMemo(dayKey: String, role: PeerRole, text: String, pairID: UUID? = nil) throws -> JournalSnapshot {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = DailyMemo.roleMemoKey(dayKey: dayKey, role: role)
+        return try modify { snapshot in
+            let existingMemoAt = snapshot.roleDailyMemos[key]?.updatedAt ?? .distantPast
+            let existingDeletedAt = snapshot.deletedRoleMemoKeys[key] ?? .distantPast
+            let legacyMemo = snapshot.dailyMemos[dayKey]
+            let legacyMatchesRole = legacyMemo != nil && (legacyMemo?.authorRole == nil || legacyMemo?.authorRole == role)
+            let legacyAt = legacyMatchesRole ? (legacyMemo?.updatedAt ?? .distantPast) : .distantPast
+            let ts = Self.monotonicNow(after: existingMemoAt, existingDeletedAt, legacyAt)
+            if trimmed.isEmpty {
+                snapshot.roleDailyMemos[key] = nil
+                snapshot.deletedRoleMemoKeys[key] = ts
+                if legacyMatchesRole {
+                    snapshot.dailyMemos[dayKey] = nil
+                    snapshot.deletedMemoDays[dayKey] = ts
+                }
+            } else {
+                snapshot.roleDailyMemos[key] = DailyMemo(
+                    dayKey: dayKey,
+                    text: trimmed,
+                    updatedAt: ts,
+                    pairID: pairID ?? snapshot.roleDailyMemos[key]?.pairID,
+                    authorRole: role
+                )
+                snapshot.deletedRoleMemoKeys[key] = nil
+            }
+        }
+    }
+
+    @discardableResult
+    public func addDayPhoto(_ photo: DayPhotoAttachment) throws -> JournalSnapshot {
+        try modify { snapshot in
+            let existingIndex = snapshot.dayPhotos.firstIndex(where: { $0.id == photo.id })
+            let existingAt = existingIndex.map { snapshot.dayPhotos[$0].updatedAt } ?? .distantPast
+            let deletedAt = snapshot.deletedDayPhotos[photo.id] ?? .distantPast
+            let ts = Self.monotonicNow(after: photo.updatedAt, existingAt, deletedAt)
+            let normalizedName = Self.normalizedOptionalText(photo.locationName)
+            let stored = DayPhotoAttachment(
+                id: photo.id, pairID: photo.pairID, dayKey: photo.dayKey, authorRole: photo.authorRole,
+                mediaKind: photo.mediaKind, durationSeconds: photo.durationSeconds,
+                thumbnailAssetID: photo.thumbnailAssetID, placeTagID: photo.placeTagID,
+                coordinate: photo.coordinate?.isValid == true ? photo.coordinate : nil,
+                capturedAt: photo.capturedAt, locationName: normalizedName,
+                planID: photo.planID, excludedPlanIDs: photo.excludedPlanIDs,
+                createdAt: existingIndex.map { snapshot.dayPhotos[$0].createdAt } ?? photo.createdAt,
+                updatedAt: ts
+            )
+            if let existingIndex {
+                snapshot.dayPhotos[existingIndex] = stored
+            } else {
+                snapshot.dayPhotos.append(stored)
+            }
+            snapshot.deletedDayPhotos[photo.id] = nil
+        }
+    }
+
+    @discardableResult
+    public func updateDayPhotoLocation(
+        id: UUID,
+        coordinate: GeoCoordinate?,
+        locationName: String?,
+        placeTagID: UUID? = nil
+    ) throws -> JournalSnapshot {
+        try modify { snapshot in
+            guard let index = snapshot.dayPhotos.firstIndex(where: { $0.id == id }) else {
+                throw JournalStoreError.recordNotFound
+            }
+            let existing = snapshot.dayPhotos[index]
+            let ts = Self.monotonicNow(after: existing.updatedAt, snapshot.deletedDayPhotos[id] ?? .distantPast)
+            snapshot.dayPhotos[index] = DayPhotoAttachment(
+                id: existing.id, pairID: existing.pairID, dayKey: existing.dayKey, authorRole: existing.authorRole,
+                mediaKind: existing.mediaKind, durationSeconds: existing.durationSeconds,
+                thumbnailAssetID: existing.thumbnailAssetID, placeTagID: placeTagID,
+                coordinate: coordinate?.isValid == true ? coordinate : nil,
+                capturedAt: existing.capturedAt, locationName: Self.normalizedOptionalText(locationName),
+                planID: existing.planID, excludedPlanIDs: existing.excludedPlanIDs,
+                createdAt: existing.createdAt, updatedAt: ts
+            )
+            snapshot.deletedDayPhotos[id] = nil
+        }
+    }
+
+    @discardableResult
+    public func updateDayPhotoPlanAssignment(
+        id: UUID,
+        planID: UUID?,
+        excludedPlanIDs: [UUID]
+    ) throws -> JournalSnapshot {
+        try modify { snapshot in
+            guard let index = snapshot.dayPhotos.firstIndex(where: { $0.id == id }) else {
+                throw JournalStoreError.recordNotFound
+            }
+            let existing = snapshot.dayPhotos[index]
+            let ts = Self.monotonicNow(after: existing.updatedAt, snapshot.deletedDayPhotos[id] ?? .distantPast)
+            snapshot.dayPhotos[index] = DayPhotoAttachment(
+                id: existing.id, pairID: existing.pairID, dayKey: existing.dayKey, authorRole: existing.authorRole,
+                mediaKind: existing.mediaKind, durationSeconds: existing.durationSeconds,
+                thumbnailAssetID: existing.thumbnailAssetID, placeTagID: existing.placeTagID,
+                coordinate: existing.coordinate, capturedAt: existing.capturedAt,
+                locationName: existing.locationName,
+                planID: planID,
+                excludedPlanIDs: excludedPlanIDs,
+                createdAt: existing.createdAt, updatedAt: ts
+            )
+            snapshot.deletedDayPhotos[id] = nil
+        }
+    }
+
+    @discardableResult
+    public func deleteDayPhoto(id: UUID) throws -> JournalSnapshot {
+        try modify { snapshot in
+            guard let index = snapshot.dayPhotos.firstIndex(where: { $0.id == id }) else {
+                throw JournalStoreError.recordNotFound
+            }
+            let existing = snapshot.dayPhotos.remove(at: index)
+            snapshot.deletedDayPhotos[id] = Self.monotonicNow(
+                after: existing.updatedAt, snapshot.deletedDayPhotos[id] ?? .distantPast
+            )
+        }
+    }
+
+    @discardableResult
+    public func addDayPlaceTag(_ tag: DayPlaceTag) throws -> JournalSnapshot {
+        let trimmedName = tag.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try modify { snapshot in
+            let existingIndex = snapshot.dayPlaceTags.firstIndex(where: { $0.id == tag.id })
+            let existingAt = existingIndex.map { snapshot.dayPlaceTags[$0].updatedAt } ?? .distantPast
+            let deletedAt = snapshot.deletedDayPlaceTags[tag.id] ?? .distantPast
+            let ts = Self.monotonicNow(after: tag.updatedAt, existingAt, deletedAt)
+            let stored = DayPlaceTag(
+                id: tag.id, pairID: tag.pairID, dayKey: tag.dayKey, name: trimmedName,
+                address: Self.normalizedOptionalText(tag.address),
+                coordinate: tag.coordinate?.isValid == true ? tag.coordinate : nil,
+                authorRole: tag.authorRole,
+                createdAt: existingIndex.map { snapshot.dayPlaceTags[$0].createdAt } ?? tag.createdAt,
+                updatedAt: ts
+            )
+            if let existingIndex {
+                snapshot.dayPlaceTags[existingIndex] = stored
+            } else {
+                snapshot.dayPlaceTags.append(stored)
+            }
+            snapshot.deletedDayPlaceTags[tag.id] = nil
+        }
+    }
+
+    @discardableResult
+    public func deleteDayPlaceTag(id: UUID) throws -> JournalSnapshot {
+        try modify { snapshot in
+            guard let index = snapshot.dayPlaceTags.firstIndex(where: { $0.id == id }) else {
+                throw JournalStoreError.recordNotFound
+            }
+            let existing = snapshot.dayPlaceTags.remove(at: index)
+            snapshot.deletedDayPlaceTags[id] = Self.monotonicNow(
+                after: existing.updatedAt, snapshot.deletedDayPlaceTags[id] ?? .distantPast
+            )
+        }
+    }
+
+    @discardableResult
+    public func upsertPlanEvent(_ event: PairPlanEvent) throws -> JournalSnapshot {
+        let trimmedTitle = event.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedChecklist = event.checklist.compactMap { item -> PairPlanChecklistItem? in
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return PairPlanChecklistItem(id: item.id, title: title, isDone: item.isDone, kind: item.kind)
+        }
+        return try modify { snapshot in
+            let existingIndex = snapshot.planEvents.firstIndex(where: { $0.id == event.id })
+            let existingAt = existingIndex.map { snapshot.planEvents[$0].updatedAt } ?? .distantPast
+            let deletedAt = snapshot.deletedPlanEvents[event.id] ?? .distantPast
+            let ts = Self.monotonicNow(after: event.updatedAt, existingAt, deletedAt)
+            let stored = PairPlanEvent(
+                id: event.id,
+                pairID: event.pairID,
+                title: trimmedTitle,
+                startDayKey: event.startDayKey,
+                endDayKey: event.endDayKey,
+                icon: event.icon,
+                memo: Self.normalizedOptionalText(event.memo),
+                checklist: normalizedChecklist,
+                authorRole: event.authorRole,
+                createdAt: existingIndex.map { snapshot.planEvents[$0].createdAt } ?? event.createdAt,
+                updatedAt: ts
+            )
+            if let existingIndex {
+                snapshot.planEvents[existingIndex] = stored
+            } else {
+                snapshot.planEvents.append(stored)
+            }
+            snapshot.deletedPlanEvents[event.id] = nil
+        }
+    }
+
+    @discardableResult
+    public func deletePlanEvent(id: UUID) throws -> JournalSnapshot {
+        try modify { snapshot in
+            guard let index = snapshot.planEvents.firstIndex(where: { $0.id == id }) else {
+                throw JournalStoreError.recordNotFound
+            }
+            let existing = snapshot.planEvents.remove(at: index)
+            snapshot.deletedPlanEvents[id] = Self.monotonicNow(
+                after: existing.updatedAt, snapshot.deletedPlanEvents[id] ?? .distantPast
+            )
+            for idx in snapshot.dayPhotos.indices {
+                let photo = snapshot.dayPhotos[idx]
+                let needsPlanClear = photo.planID == id
+                let needsExcludedClear = photo.excludedPlanIDs.contains(id)
+                guard needsPlanClear || needsExcludedClear else { continue }
+                let ts = Self.monotonicNow(after: photo.updatedAt, snapshot.deletedDayPhotos[photo.id] ?? .distantPast)
+                snapshot.dayPhotos[idx] = DayPhotoAttachment(
+                    id: photo.id, pairID: photo.pairID, dayKey: photo.dayKey, authorRole: photo.authorRole,
+                    mediaKind: photo.mediaKind, durationSeconds: photo.durationSeconds,
+                    thumbnailAssetID: photo.thumbnailAssetID, placeTagID: photo.placeTagID,
+                    coordinate: photo.coordinate, capturedAt: photo.capturedAt, locationName: photo.locationName,
+                    planID: needsPlanClear ? nil : photo.planID,
+                    excludedPlanIDs: photo.excludedPlanIDs.filter { $0 != id },
+                    createdAt: photo.createdAt, updatedAt: ts
+                )
+            }
+        }
+    }
+
+    private static func normalizedOptionalText(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     @discardableResult
@@ -256,6 +502,7 @@ public final class JournalStore: Sendable {
                 snapshot.roleProfiles = [:]
                 snapshot.anniversary = nil
                 snapshot.deletedMemoDays = [:]
+                snapshot.deletedRoleMemoKeys = [:]
             }
         }
     }

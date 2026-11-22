@@ -1,15 +1,27 @@
 import OurHoursCore
+import PhotosUI
 import SwiftUI
 import UIKit
 
 struct SettingsView: View {
     var onReplayOnboarding: (() -> Void)? = nil
+    #if DEBUG
+    var activeDebugPreset: DebugPreviewPreset? = nil
+    var onSelectDebugPreset: ((DebugPreviewPreset?) -> Void)? = nil
+    var onReplayLaunchAnimation: (() -> Void)? = nil
+    #endif
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var showPairing = false
+    @State private var showBubbleCustomizer = false
     @State private var confirmUnpair = false
+    @State private var versionTapCount = 0
+    @State private var lastVersionTapAt = Date.distantPast
+    @State private var showDiagnosticsSheet = false
+    @State private var selectedAvatarItem: PhotosPickerItem?
+    @State private var avatarEditSource: AvatarEditSource?
     #if DEBUG
     @State private var confirmClear = false
     #endif
@@ -73,6 +85,22 @@ struct SettingsView: View {
         .preferredColorScheme(.light)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showPairing) { PairingView() }
+        .sheet(isPresented: $showBubbleCustomizer) {
+            BubbleCustomizerView()
+                .environment(model)
+        }
+        .sheet(isPresented: $showDiagnosticsSheet) {
+            NavigationStack {
+                LogsView(showsCloseButton: true)
+            }
+            .environment(model)
+            .font(FoamFont.medium(16))
+        }
+        .fullScreenCover(item: $avatarEditSource) { source in
+            AvatarCropEditorSheet(sourceImage: source.image) { croppedJPEGData in
+                _ = model.setLocalAvatar(croppedJPEGData: croppedJPEGData)
+            }
+        }
     }
 
     private var pairingStatusLabel: String {
@@ -86,9 +114,84 @@ struct SettingsView: View {
     private var releaseProfileSection: some View {
         ReleaseBubbleCard(title: "プロフィールと記念日", isTogether: model.isTogetherNow, seed: 2.1) {
             VStack(alignment: .leading, spacing: 12) {
+                Text("プロフィールアイコン")
+                    .font(FoamFont.bold(15, relativeTo: .subheadline))
+                let hasLocalAvatar = model.localAvatarImage != nil
+                HStack(spacing: 12) {
+                    UserAvatarView(
+                        image: model.localAvatarImage,
+                        bubbleColor: model.localBubbleColor,
+                        size: 54
+                    )
+                    PhotosPicker(selection: $selectedAvatarItem, matching: .images) {
+                        Text(hasLocalAvatar ? "アイコンを変更" : "アイコンを選ぶ")
+                    }
+                    .buttonStyle(FoamCardActionStyle(fullWidth: false))
+
+                    if hasLocalAvatar {
+                        Button("削除", role: .destructive) {
+                            model.clearLocalAvatar()
+                        }
+                        .font(FoamFont.bold(13, relativeTo: .caption))
+                        .foregroundStyle(Color.red.opacity(0.75))
+                        .frame(minHeight: 44)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .onChange(of: selectedAvatarItem) { _, item in
+                    guard let item else { return }
+                    Task {
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let normalized = PhotoMetadataProcessor.loadNormalizedImage(from: data) {
+                            avatarEditSource = AvatarEditSource(image: normalized)
+                        }
+                        selectedAvatarItem = nil
+                    }
+                }
+
+                Divider()
                 Text("自分のシャボン玉")
                     .font(FoamFont.bold(15, relativeTo: .subheadline))
-                BubbleColorSwatches(selection: model.localBubbleColor, onSelect: model.setLocalBubbleColor)
+                let bubbleProgress = model.bubbleUnlockProgress()
+                let unlockedColors = BubbleColorTheme.allCases.filter {
+                    bubbleProgress.isUnlocked(BubbleUnlockCatalog.requirement(for: $0))
+                }
+                let unlockedRewardCount = bubbleProgress.unlockedNonStarterItems.count
+                let totalRewardCount = BubbleUnlockCatalog.nonStarterItems.count
+                BubbleColorSwatches(
+                    selection: model.localBubbleColor,
+                    colors: unlockedColors,
+                    onSelect: model.setLocalBubbleColor
+                )
+
+                Button {
+                    showBubbleCustomizer = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("シャボン玉をきせかえ（表情・色・デコ）")
+                            .font(FoamFont.bold(14, relativeTo: .subheadline))
+                            .foregroundStyle(FoamTheme.ink)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 4)
+                        if !model.unseenUnlockedItemIDs.isEmpty {
+                            Circle()
+                                .fill(FoamTheme.warmAccent)
+                                .frame(width: 8, height: 8)
+                        }
+                        Text("\(unlockedRewardCount)/\(totalRewardCount)")
+                            .font(FoamFont.bold(12, relativeTo: .caption))
+                            .foregroundStyle(FoamTheme.warmAccent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.white.opacity(0.84), in: Capsule())
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(FoamTheme.ink.opacity(0.45))
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
                 Divider()
                 OptionalProfileDateRow(
@@ -418,6 +521,24 @@ struct SettingsView: View {
                 animated: false
             )
         }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: handleVersionRowTap)
+    }
+
+    private func handleVersionRowTap() {
+        let now = Date.now
+        if now.timeIntervalSince(lastVersionTapAt) > 2.0 {
+            versionTapCount = 1
+        } else {
+            versionTapCount += 1
+        }
+        lastVersionTapAt = now
+        if versionTapCount >= 5 {
+            versionTapCount = 0
+            lastVersionTapAt = .distantPast
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showDiagnosticsSheet = true
+        }
     }
 
     // MARK: - Region 2: Plain Debug Section (Unstyled Developer Controls)
@@ -432,6 +553,178 @@ struct SettingsView: View {
                 .padding(.horizontal, 4)
 
             VStack(alignment: .leading, spacing: 14) {
+                // 0. 実行環境・プレビュープリセット・擬似タイマー
+                debugBlock(title: "実行環境") {
+                    debugRow("Bundle ID", value: Bundle.main.bundleIdentifier ?? "不明")
+                    Divider()
+                    debugRow(
+                        "BLE チャンネル",
+                        value: BLEConstants.isDebugChannel ? "DEV (...D001)" : "PROD (...0001)"
+                    )
+                    Divider()
+                    debugRow("CloudKit", value: "Development (DEBUG)")
+                    Divider()
+                    debugRow(
+                        "モード",
+                        value: activeDebugPreset.map { "プリセット: \($0.shortBadgeTitle)" } ?? "通常（ライブ）"
+                    )
+                }
+
+                debugBlock(title: "プレビュープリセット（実データ保護）") {
+                    Text("実端末のペア設定・記録・CloudKit には一切触れず、一時サンドボックスで画面を確認できます。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(DebugPreviewPreset.allCases) { preset in
+                        Divider()
+                        Button {
+                            onSelectDebugPreset?(preset)
+                        } label: {
+                            HStack(alignment: .center, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(preset.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(preset.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 8)
+                                if activeDebugPreset == preset {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if activeDebugPreset != nil {
+                        Divider()
+                        Button("通常モード（ライブ）に戻す") {
+                            onSelectDebugPreset?(nil)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                debugBlock(title: "擬似タイマー（シャボン玉成長テスト）") {
+                    Text("ディスクや CloudKit へ書き込まず、ホームの「いっしょにいるよ」タイマー表示だけを上書きします。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    let presets: [(title: String, seconds: TimeInterval?)] = [
+                        ("オフ", nil),
+                        ("2分", 2 * 60),
+                        ("1時間", 3600),
+                        ("4時間", 4 * 3600),
+                        ("10時間", 10 * 3600),
+                        ("16時間", 16 * 3600)
+                    ]
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                        ForEach(presets, id: \.title) { item in
+                            let isOffSelected = item.seconds == nil && model.debugSimulatedActiveSessionStart == nil
+                            Button {
+                                model.debugSimulatedActiveSessionStart = item.seconds.map {
+                                    Date.now.addingTimeInterval(-$0)
+                                }
+                            } label: {
+                                Text(item.title)
+                                    .font(.caption.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        isOffSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    if let simulatedStart = model.debugSimulatedActiveSessionStart {
+                        let minutes = max(0, Int(Date.now.timeIntervalSince(simulatedStart) / 60))
+                        Text("模擬タイマー稼働中（開始: \(minutes)分前）")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                debugBlock(title: "シャボン玉アンロック＆起動アニメ検証") {
+                    Toggle("全アイテムを一時アンロック", isOn: Binding(
+                        get: { model.debugUnlockAllBubbleItems },
+                        set: { model.debugUnlockAllBubbleItems = $0 }
+                    ))
+                    .font(.subheadline)
+
+                    let unlockPresets: [(title: String, hours: Double, days: Int)] = [
+                        ("リセット", 0, 0),
+                        ("+15時間 / +7日", 15, 7),
+                        ("+200時間 / +100日", 200, 100),
+                        ("+1095時間 / +365日", 1095, 365)
+                    ]
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
+                        ForEach(unlockPresets, id: \.title) { preset in
+                            Button {
+                                model.debugBonusHours = preset.hours
+                                model.debugBonusDays = preset.days
+                                if preset.hours == 0 && preset.days == 0 {
+                                    model.debugUnlockAllBubbleItems = false
+                                    model.debugSimulatedEvents.removeAll()
+                                }
+                                model.evaluateBubbleUnlocks(allowNotification: preset.hours > 0 || preset.days > 0)
+                            } label: {
+                                Text(preset.title)
+                                    .font(.caption.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    Divider()
+                    Text("イベント解放テスト")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
+                        ForEach(BubbleEventKind.allCases) { event in
+                            let active = model.debugSimulatedEvents.contains(event)
+                            Button {
+                                if active {
+                                    model.debugSimulatedEvents.remove(event)
+                                } else {
+                                    model.debugSimulatedEvents.insert(event)
+                                    model.evaluateBubbleUnlocks(allowNotification: true)
+                                }
+                            } label: {
+                                Text(event.displayName)
+                                    .font(.caption2.weight(.semibold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 4)
+                                    .background(
+                                        active ? Color.accentColor.opacity(0.20) : Color.secondary.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    if let onReplayLaunchAnimation {
+                        Divider()
+                        Button("起動アニメーションを再生") {
+                            dismiss()
+                            onReplayLaunchAnimation()
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                    }
+                }
+
                 // 1. ペア内部情報
                 debugBlock(title: "ペア内部情報") {
                     if let pair = state.pairConfiguration {
@@ -608,6 +901,11 @@ struct SettingsView: View {
         }
     }
     #endif
+}
+
+private struct AvatarEditSource: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }
 
 private struct PartnerNicknameEditView: View {

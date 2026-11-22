@@ -11,6 +11,7 @@ public enum PairSpaceCryptoError: Error, Sendable, Equatable {
 public enum PairAssetKind: String, Codable, Sendable, Equatable, CaseIterable {
     case avatar
     case dayPhoto
+    case dayVideo
     case letterPhoto
 }
 
