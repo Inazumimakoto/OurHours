@@ -65,10 +65,53 @@ public struct SessionCoordinator: Sendable {
     }
 
     @discardableResult
+    public mutating func recordActiveHeartbeat(
+        at: Date,
+        minimumInterval: TimeInterval = BLEConstants.activeSessionHeartbeatSeconds
+    ) -> EncounterSession? {
+        guard !activeLinks.isEmpty,
+              let index = sessions.lastIndex(where: { $0.status == .active }) else {
+            return nil
+        }
+        let currentMark = sessions[index].effectiveLastSeenAt
+        guard at > currentMark, at.timeIntervalSince(currentMark) >= minimumInterval else {
+            return nil
+        }
+        sessions[index].lastSeenAt = at
+        return sessions[index]
+    }
+
+    @discardableResult
     public mutating func linkAuthenticated(
-        _ link: ActiveLinkKey, pairID: UUID, at: Date, connectionPath: ConnectionPath, batteryLevel: Float? = nil
+        _ link: ActiveLinkKey,
+        pairID: UUID,
+        at: Date,
+        connectionPath: ConnectionPath,
+        batteryLevel: Float? = nil,
+        maxResumeGapSeconds: TimeInterval = BLEConstants.terminatedSessionResumeWindowSeconds
     ) -> EncounterSession? {
         guard activeLinks.insert(link).inserted, activeSession == nil else { return nil }
+
+        if maxResumeGapSeconds > 0,
+           let lastIndex = sessions.indices.last,
+           sessions[lastIndex].pairID == pairID,
+           sessions[lastIndex].status == .unknownEnd,
+           sessions[lastIndex].endReason == .terminatedWhileActive {
+            let lastKnown = sessions[lastIndex].effectiveLastSeenAt
+            if at >= lastKnown, at.timeIntervalSince(lastKnown) <= maxResumeGapSeconds {
+                sessions[lastIndex].status = .active
+                sessions[lastIndex].endedAt = nil
+                sessions[lastIndex].endReason = nil
+                sessions[lastIndex].disconnectErrorDescription = nil
+                sessions[lastIndex].isAutoReconnectPending = nil
+                sessions[lastIndex].batteryLevelAtEnd = nil
+                if at > sessions[lastIndex].startedAt {
+                    sessions[lastIndex].lastSeenAt = at
+                }
+                return sessions[lastIndex]
+            }
+        }
+
         let priorEnd = sessions.lazy.filter { $0.pairID == pairID && $0.status == .completed }
             .compactMap(\.endedAt).filter { $0 <= at }.max()
         let session = EncounterSession(

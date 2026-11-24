@@ -176,6 +176,8 @@ final class AppModel {
     let locationMonitor: any LocationMonitoring
     private(set) var locationMatchedSessions: [LocationMatchedSession] = []
     private(set) var locationSyncState: LocationSyncState = .idle
+    private var lastBLELocationRefreshAt = Date.distantPast
+    private static let bleLocationRefreshCooldownSeconds: TimeInterval = 15 * 60
 
     init(
         engine: OurHoursBLEEngine,
@@ -310,17 +312,26 @@ final class AppModel {
                 guard let self else { break }
                 let value = publishedSnapshot.pairConfiguration == self.snapshot.pairConfiguration
                     ? publishedSnapshot : engine.currentSnapshot()
+                let previousActiveID = self.snapshot.activeSession?.id
                 let previousNonActive = self.snapshot.sessions.filter { $0.status != .active }
+                let nextActiveID = value.activeSession?.id
                 let nextNonActive = value.sessions.filter { $0.status != .active }
                 self.snapshot = value
                 self.refreshPermissionStates()
-                if nextNonActive != previousNonActive {
+                let sessionEndedOrReconciled = nextNonActive != previousNonActive
+                if sessionEndedOrReconciled {
                     self.historyInputRevision += 1
                     self.evaluateBubbleUnlocks(allowNotification: true)
                     if value.isPaired {
                         self.scheduleHistorySync(delay: .seconds(1.5))
                     }
                 }
+                self.refreshLocationOnBLETransitionIfNeeded(
+                    previousActiveID: previousActiveID,
+                    nextActiveID: nextActiveID,
+                    sessionEndedOrReconciled: sessionEndedOrReconciled,
+                    isPaired: value.isPaired
+                )
             }
         }
         accountChangeTask = Task { [weak self] in
@@ -339,6 +350,22 @@ final class AppModel {
         scheduledAssetSyncTask?.cancel()
         secretPopUnlockTask?.cancel()
         assetSyncTask?.cancel()
+    }
+
+    private func refreshLocationOnBLETransitionIfNeeded(
+        previousActiveID: UUID?,
+        nextActiveID: UUID?,
+        sessionEndedOrReconciled: Bool,
+        isPaired: Bool
+    ) {
+        let activeChanged = nextActiveID != nil && nextActiveID != previousActiveID
+        guard activeChanged || sessionEndedOrReconciled else { return }
+        guard isPaired, isAutoRecordingEnabled, locationMonitor.isEnabled,
+              locationMonitor.authorizationStatus == .authorizedAlways else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastBLELocationRefreshAt) >= Self.bleLocationRefreshCooldownSeconds else { return }
+        lastBLELocationRefreshAt = now
+        locationMonitor.requestFreshFix(source: .significantChange)
     }
 
     private var partnerProfile: SyncedRoleProfile? {

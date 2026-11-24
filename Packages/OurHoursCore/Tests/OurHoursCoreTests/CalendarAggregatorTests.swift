@@ -584,4 +584,115 @@ struct CalendarAggregatorTests {
         #expect(novSummaries["2026-11-01"]?.continuesFromPreviousDay == true && novSummaries["2026-11-01"]?.continuesToNextDay == true)
         #expect(novSummaries["2026-11-02"]?.continuesFromPreviousDay == true && novSummaries["2026-11-02"]?.continuesToNextDay == false)
     }
+
+    @Test func absorbsUneditedUnknownEndCoveredByLocationEditedOrManualAndPreservesEditedUnknown() throws {
+        let base = try date("2026-11-23T00:00:00+09:00")
+        let t0100 = base.addingTimeInterval(3_600)
+        let t0200 = base.addingTimeInterval(7_200)
+        let t020430 = base.addingTimeInterval(7_470) // 02:04:30
+        let t0205 = base.addingTimeInterval(7_500)   // 02:05:00
+        let t0220 = base.addingTimeInterval(8_400)   // 02:20:00
+        let t0400 = base.addingTimeInterval(14_400)
+
+        // 1. Emitted locationMatched covers BLE unknownEnd -> absorbed into locationMatched (same pair only)
+        let uLoc = EncounterSession(
+            id: UUID(), pairID: pairID, startedAt: t020430, endedAt: nil,
+            status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let otherPairUnknown = EncounterSession(
+            id: UUID(), pairID: UUID(), startedAt: t020430, endedAt: nil,
+            status: .unknownEnd, connectionPath: .scanDiscovery, startRole: .central
+        )
+        let locCovering = LocationMatchedSession(
+            id: LocationPayloadCipher.deterministicMatchID(pairID: pairID, startedAt: base),
+            pairID: pairID,
+            startedAt: base,
+            endedAt: t0205,
+            averageDistanceMeters: 15
+        )
+        let absorbedByLoc = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [uLoc, otherPairUnknown],
+            locationSessions: [locCovering],
+            journal: JournalSnapshot()
+        )
+        #expect(absorbedByLoc.count == 2)
+        let locResolved = try #require(absorbedByLoc.first { $0.id == locCovering.id })
+        #expect(locResolved.status == .completed && locResolved.startedAt == base && locResolved.endedAt == t0205)
+        #expect(Set(locResolved.linkedSessionIDs) == [locCovering.id, uLoc.id])
+        #expect(absorbedByLoc.contains { $0.id == otherPairUnknown.id && $0.status == .unknownEnd })
+
+        // Deleted locationMatched must NOT absorb unknownEnd
+        let deletedLocJournal = JournalSnapshot(
+            sessionOverrides: [locCovering.id: SessionOverride(sessionID: locCovering.id, action: .deleted, updatedAt: t0205)]
+        )
+        let notAbsorbedByDeleted = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [uLoc],
+            locationSessions: [locCovering],
+            journal: deletedLocJournal
+        )
+        #expect(notAbsorbedByDeleted.count == 1 && notAbsorbedByDeleted[0].status == .unknownEnd)
+
+        // 2. Suppressed locationMatched (>=95% covered by completed BLE) + trailing unknownEnd -> merges & extends BLE end
+        let bleMain = session(base, t020430.addingTimeInterval(-15)) // 00:00:00 -> 02:04:15
+        let trailingUnknown = session(t020430, nil, status: .unknownEnd) // 02:04:30 -> ?
+        let suppressedLocMerged = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [bleMain, trailingUnknown],
+            locationSessions: [locCovering], // 00:00:00 -> 02:05:00
+            journal: JournalSnapshot()
+        )
+        #expect(suppressedLocMerged.count == 1)
+        #expect(suppressedLocMerged[0].status == .completed)
+        #expect(suppressedLocMerged[0].startedAt == base && suppressedLocMerged[0].endedAt == t0205)
+        #expect(Set(suppressedLocMerged[0].linkedSessionIDs) == [bleMain.id, trailingUnknown.id])
+
+        // 3. AutoEdited completed session covering unknownEnd -> absorbed into linkedSessionIDs without moving edited bounds
+        let autoTarget = session(t0100, t0200)
+        let editedJournal = JournalSnapshot(
+            sessionOverrides: [
+                autoTarget.id: SessionOverride(
+                    sessionID: autoTarget.id,
+                    action: .edited(startedAt: t0100, endedAt: t0220),
+                    updatedAt: t0220
+                )
+            ]
+        )
+        let resolvedEdited = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [autoTarget, trailingUnknown],
+            journal: editedJournal
+        )
+        #expect(resolvedEdited.count == 1)
+        #expect(resolvedEdited[0].startedAt == t0100 && resolvedEdited[0].endedAt == t0220)
+        #expect(Set(resolvedEdited[0].linkedSessionIDs) == [autoTarget.id, trailingUnknown.id])
+
+        // 4. Manual record covers unknownEnd inside [start, end), leaves unknownEnd outside untouched
+        let manual = ManualEncounterRecord(
+            id: UUID(), pairID: pairID, startedAt: t0100, endedAt: t0220, createdAt: t0220, updatedAt: t0220
+        )
+        let outsideUnknown = session(t0400, nil, status: .unknownEnd)
+        let manualResolved = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [trailingUnknown, outsideUnknown],
+            journal: JournalSnapshot(manualRecords: [manual])
+        )
+        #expect(manualResolved.count == 2)
+        #expect(manualResolved[0].id == manual.id)
+        #expect(manualResolved[1].id == outsideUnknown.id && manualResolved[1].status == .unknownEnd)
+
+        // 5. Explicitly adjustedStart unknownEnd (.autoEdited) is NEVER swallowed by covering completed manual/location
+        let adjustedUnknownJournal = JournalSnapshot(
+            manualRecords: [manual],
+            sessionOverrides: [
+                trailingUnknown.id: SessionOverride(
+                    sessionID: trailingUnknown.id,
+                    action: .adjustedStart(startedAt: t0200),
+                    updatedAt: t0220
+                )
+            ]
+        )
+        let preservedEditedUnknown = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [trailingUnknown],
+            locationSessions: [locCovering],
+            journal: adjustedUnknownJournal
+        )
+        #expect(preservedEditedUnknown.contains { $0.id == trailingUnknown.id && $0.status == .unknownEnd })
+    }
 }

@@ -117,6 +117,8 @@ public enum EncounterCalendarAggregator {
         return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
     }
 
+    private typealias PairedEncounter = (encounter: ResolvedEncounter, pairID: UUID)
+
     public static func resolveEncounters(
         autoSessions: [EncounterSession],
         peerSessions: [SyncedPeerSession] = [],
@@ -124,28 +126,30 @@ public enum EncounterCalendarAggregator {
         journal: JournalSnapshot
     ) -> [ResolvedEncounter] {
         // Keep manual corrections authoritative when automatic logs refresh (SPEC §4.1).
-        let activeAutomatic: [ResolvedEncounter] = autoSessions.compactMap { session in
+        let activeAutomatic: [PairedEncounter] = autoSessions.compactMap { session in
             guard session.status == .active else { return nil }
+            let encounter: ResolvedEncounter
             switch journal.sessionOverrides[session.id]?.action {
             case .deleted:
                 return nil
             case let .edited(startedAt, endedAt):
-                return ResolvedEncounter(
+                encounter = ResolvedEncounter(
                     id: session.id, source: .autoEdited(sessionID: session.id), linkedSessionIDs: [session.id],
                     startedAt: startedAt, endedAt: endedAt, status: .completed, connectionPath: session.connectionPath
                 )
             case let .adjustedStart(startedAt):
-                return ResolvedEncounter(
+                encounter = ResolvedEncounter(
                     id: session.id, source: .autoEdited(sessionID: session.id), linkedSessionIDs: [session.id],
                     startedAt: startedAt, endedAt: nil, status: .active, connectionPath: session.connectionPath
                 )
             case nil:
-                return ResolvedEncounter(
+                encounter = ResolvedEncounter(
                     id: session.id, source: .auto(sessionID: session.id), linkedSessionIDs: [session.id],
                     startedAt: session.startedAt, endedAt: session.endedAt, status: session.status,
                     connectionPath: session.connectionPath
                 )
             }
+            return (encounter, session.pairID)
         }
 
         let mergedNonActive = resolveCrossDeviceNonActiveBLE(
@@ -155,48 +159,74 @@ public enum EncounterCalendarAggregator {
             overrides: journal.sessionOverrides
         )
 
-        let automatic = activeAutomatic + coalesceShortGapBLE(mergedNonActive)
-        let completedBleIntervals = mergedDateIntervals(automatic.compactMap { encounter in
+        var automaticEntries = activeAutomatic + coalesceShortGapBLE(mergedNonActive)
+        let completedBleIntervals = mergedDateIntervals(automaticEntries.compactMap { entry in
+            let encounter = entry.encounter
             guard encounter.status == .completed, let end = encounter.endedAt, end > encounter.startedAt else { return nil }
             return DateInterval(start: encounter.startedAt, end: end)
         })
-        let locationResolved: [ResolvedEncounter] = locationSessions.compactMap { loc in
+
+        var locationEntries: [PairedEncounter] = []
+        var suppressedUneditedLocations: [LocationMatchedSession] = []
+        for loc in locationSessions {
             switch journal.sessionOverrides[loc.id]?.action {
             case .deleted:
-                return nil
+                continue
             case let .edited(startedAt, endedAt):
-                return ResolvedEncounter(
-                    id: loc.id, source: .autoEdited(sessionID: loc.id), linkedSessionIDs: [loc.id],
-                    startedAt: startedAt, endedAt: endedAt, status: .completed, connectionPath: nil
-                )
+                locationEntries.append((
+                    ResolvedEncounter(
+                        id: loc.id, source: .autoEdited(sessionID: loc.id), linkedSessionIDs: [loc.id],
+                        startedAt: startedAt, endedAt: endedAt, status: .completed, connectionPath: nil
+                    ),
+                    loc.pairID
+                ))
             case let .adjustedStart(startedAt):
                 let validEnd = loc.endedAt > startedAt ? loc.endedAt : nil
-                return ResolvedEncounter(
-                    id: loc.id, source: .autoEdited(sessionID: loc.id), linkedSessionIDs: [loc.id],
-                    startedAt: startedAt, endedAt: validEnd,
-                    status: validEnd == nil ? .unknownEnd : .completed, connectionPath: nil
-                )
+                locationEntries.append((
+                    ResolvedEncounter(
+                        id: loc.id, source: .autoEdited(sessionID: loc.id), linkedSessionIDs: [loc.id],
+                        startedAt: startedAt, endedAt: validEnd,
+                        status: validEnd == nil ? .unknownEnd : .completed, connectionPath: nil
+                    ),
+                    loc.pairID
+                ))
             case nil:
-                guard loc.endedAt > loc.startedAt else { return nil }
+                guard loc.endedAt > loc.startedAt else { continue }
                 let locInterval = DateInterval(start: loc.startedAt, end: loc.endedAt)
                 let covered = coveredDuration(of: locInterval, by: completedBleIntervals)
                 if locInterval.duration > 0, (covered / locInterval.duration) >= 0.95 {
-                    return nil
+                    suppressedUneditedLocations.append(loc)
+                    continue
                 }
-                return ResolvedEncounter(
-                    id: loc.id, source: .locationMatched(sessionID: loc.id), linkedSessionIDs: [loc.id],
-                    startedAt: loc.startedAt, endedAt: loc.endedAt, status: .completed, connectionPath: nil
-                )
+                locationEntries.append((
+                    ResolvedEncounter(
+                        id: loc.id, source: .locationMatched(sessionID: loc.id), linkedSessionIDs: [loc.id],
+                        startedAt: loc.startedAt, endedAt: loc.endedAt, status: .completed, connectionPath: nil
+                    ),
+                    loc.pairID
+                ))
             }
         }
-        let manual: [ResolvedEncounter] = journal.manualRecords.compactMap { record in
+
+        let manualEntries: [(encounter: ResolvedEncounter, pairID: UUID?)] = journal.manualRecords.compactMap { record in
             guard record.endedAt >= record.startedAt else { return nil }
-            return ResolvedEncounter(
-                id: record.id, source: .manual(recordID: record.id), linkedSessionIDs: [],
-                startedAt: record.startedAt, endedAt: record.endedAt, status: .completed, connectionPath: nil
+            return (
+                ResolvedEncounter(
+                    id: record.id, source: .manual(recordID: record.id), linkedSessionIDs: [],
+                    startedAt: record.startedAt, endedAt: record.endedAt, status: .completed, connectionPath: nil
+                ),
+                record.pairID
             )
         }
-        return (automatic + locationResolved + manual).sorted {
+
+        absorbCoveredUnknownEnd(
+            automaticEntries: &automaticEntries,
+            locationEntries: &locationEntries,
+            suppressedUneditedLocations: suppressedUneditedLocations,
+            manualEntries: manualEntries
+        )
+
+        return (automaticEntries.map(\.encounter) + locationEntries.map(\.encounter) + manualEntries.map(\.encounter)).sorted {
             if $0.startedAt == $1.startedAt { return $0.id.uuidString < $1.id.uuidString }
             return $0.startedAt < $1.startedAt
         }
@@ -619,16 +649,16 @@ public enum EncounterCalendarAggregator {
     }
 
     private static func coalesceShortGapBLE(
-        _ entries: [(encounter: ResolvedEncounter, pairID: UUID)]
-    ) -> [ResolvedEncounter] {
-        var edited: [ResolvedEncounter] = []
+        _ entries: [PairedEncounter]
+    ) -> [PairedEncounter] {
+        var edited: [PairedEncounter] = []
         var completedByPair: [UUID: [ResolvedEncounter]] = [:]
         var unknownByPair: [UUID: [ResolvedEncounter]] = [:]
 
         for entry in entries {
             let enc = entry.encounter
             if case .autoEdited = enc.source {
-                edited.append(enc)
+                edited.append(entry)
                 continue
             }
             if enc.status == .completed, enc.endedAt != nil {
@@ -642,7 +672,7 @@ public enum EncounterCalendarAggregator {
             .union(unknownByPair.keys)
             .sorted { $0.uuidString < $1.uuidString }
 
-        var output = edited
+        var output: [PairedEncounter] = edited
 
         func isLocalAuto(_ source: EncounterSource) -> Bool {
             if case .auto = source { return true }
@@ -749,11 +779,197 @@ public enum EncounterCalendarAggregator {
                 }
             }
 
-            output.append(contentsOf: mergedCompleted)
-            output.append(contentsOf: mergedUnknown)
+            output.append(contentsOf: mergedCompleted.map { ($0, pairID) })
+            output.append(contentsOf: mergedUnknown.map { ($0, pairID) })
         }
 
         return output
+    }
+
+    private static func isUneditedUnknownEnd(_ encounter: ResolvedEncounter) -> Bool {
+        guard encounter.status == .unknownEnd else { return false }
+        switch encounter.source {
+        case .auto, .peerAuto:
+            return true
+        case .peerCompleted, .autoEdited, .locationMatched, .manual:
+            return false
+        }
+    }
+
+    private static func isLocalAutoSource(_ source: EncounterSource) -> Bool {
+        if case .auto = source { return true }
+        return false
+    }
+
+    private static func absorbCoveredUnknownEnd(
+        automaticEntries: inout [PairedEncounter],
+        locationEntries: inout [PairedEncounter],
+        suppressedUneditedLocations: [LocationMatchedSession],
+        manualEntries: [(encounter: ResolvedEncounter, pairID: UUID?)]
+    ) {
+        var keptAutomatic: [PairedEncounter] = []
+        var pendingUnknown: [PairedEncounter] = []
+
+        for entry in automaticEntries {
+            if isUneditedUnknownEnd(entry.encounter) {
+                pendingUnknown.append(entry)
+            } else {
+                keptAutomatic.append(entry)
+            }
+        }
+        guard !pendingUnknown.isEmpty else { return }
+
+        pendingUnknown.sort {
+            if $0.encounter.startedAt == $1.encounter.startedAt {
+                return $0.encounter.id.uuidString < $1.encounter.id.uuidString
+            }
+            return $0.encounter.startedAt < $1.encounter.startedAt
+        }
+
+        func mergeIDs(_ lhs: [UUID], _ rhs: [UUID]) -> [UUID] {
+            Array(Set(lhs + rhs)).sorted { $0.uuidString < $1.uuidString }
+        }
+
+        for unknownEntry in pendingUnknown {
+            let unknown = unknownEntry.encounter
+            let pairID = unknownEntry.pairID
+
+            // 1. Authoritative .autoEdited completed encounters (BLE or location) keep bounds and absorb IDs.
+            if let idx = keptAutomatic.firstIndex(where: { entry in
+                guard entry.pairID == pairID,
+                      case .autoEdited = entry.encounter.source,
+                      entry.encounter.status == .completed,
+                      let end = entry.encounter.endedAt,
+                      end > entry.encounter.startedAt else { return false }
+                return unknown.startedAt >= entry.encounter.startedAt && unknown.startedAt < end
+            }) {
+                let existing = keptAutomatic[idx].encounter
+                keptAutomatic[idx].encounter = ResolvedEncounter(
+                    id: existing.id,
+                    source: existing.source,
+                    linkedSessionIDs: mergeIDs(existing.linkedSessionIDs, unknown.linkedSessionIDs),
+                    startedAt: existing.startedAt,
+                    endedAt: existing.endedAt,
+                    status: existing.status,
+                    connectionPath: existing.connectionPath
+                )
+                continue
+            }
+
+            if let idx = locationEntries.firstIndex(where: { entry in
+                guard entry.pairID == pairID,
+                      case .autoEdited = entry.encounter.source,
+                      entry.encounter.status == .completed,
+                      let end = entry.encounter.endedAt,
+                      end > entry.encounter.startedAt else { return false }
+                return unknown.startedAt >= entry.encounter.startedAt && unknown.startedAt < end
+            }) {
+                let existing = locationEntries[idx].encounter
+                locationEntries[idx].encounter = ResolvedEncounter(
+                    id: existing.id,
+                    source: existing.source,
+                    linkedSessionIDs: mergeIDs(existing.linkedSessionIDs, unknown.linkedSessionIDs),
+                    startedAt: existing.startedAt,
+                    endedAt: existing.endedAt,
+                    status: existing.status,
+                    connectionPath: existing.connectionPath
+                )
+                continue
+            }
+
+            // 2. Completed manual records suppress trailing unedited unknownEnd strictly inside their range.
+            if manualEntries.contains(where: { entry in
+                guard entry.pairID == nil || entry.pairID == pairID,
+                      entry.encounter.status == .completed,
+                      let end = entry.encounter.endedAt,
+                      end > entry.encounter.startedAt else { return false }
+                return unknown.startedAt >= entry.encounter.startedAt && unknown.startedAt < end
+            }) {
+                continue
+            }
+
+            // 3. Emitted unedited locationMatched covering (or <= 10m after) unknownStart absorbs it.
+            if let idx = locationEntries.firstIndex(where: { entry in
+                guard entry.pairID == pairID,
+                      case .locationMatched = entry.encounter.source,
+                      entry.encounter.status == .completed,
+                      let end = entry.encounter.endedAt,
+                      end > entry.encounter.startedAt else { return false }
+                return unknown.startedAt >= entry.encounter.startedAt.addingTimeInterval(-bleShortGapMergeSeconds)
+                    && unknown.startedAt < end
+            }) {
+                let loc = locationEntries[idx].encounter
+                locationEntries[idx].encounter = ResolvedEncounter(
+                    id: loc.id,
+                    source: loc.source,
+                    linkedSessionIDs: mergeIDs(loc.linkedSessionIDs, unknown.linkedSessionIDs),
+                    startedAt: min(loc.startedAt, unknown.startedAt),
+                    endedAt: loc.endedAt,
+                    status: .completed,
+                    connectionPath: loc.connectionPath
+                )
+                continue
+            }
+
+            // 4. Suppressed unedited LocationMatchedSession (>=95% covered by BLE) resolves trailing unknownEnd.
+            if let suppressedLoc = suppressedUneditedLocations.first(where: { loc in
+                loc.pairID == pairID
+                    && unknown.startedAt >= loc.startedAt.addingTimeInterval(-bleShortGapMergeSeconds)
+                    && unknown.startedAt < loc.endedAt
+            }) {
+                if let idx = keptAutomatic.firstIndex(where: { entry in
+                    guard entry.pairID == pairID,
+                          entry.encounter.status == .completed,
+                          let cEnd = entry.encounter.endedAt,
+                          cEnd > entry.encounter.startedAt else { return false }
+                    if case .autoEdited = entry.encounter.source { return false }
+                    return unknown.startedAt <= cEnd.addingTimeInterval(bleShortGapMergeSeconds)
+                        && suppressedLoc.endedAt >= entry.encounter.startedAt.addingTimeInterval(-bleShortGapMergeSeconds)
+                }) {
+                    let completed = keptAutomatic[idx].encounter
+                    let completedEnd = completed.endedAt ?? completed.startedAt
+                    let mergedStart = min(completed.startedAt, unknown.startedAt)
+                    let mergedEnd = max(completedEnd, suppressedLoc.endedAt)
+                    let linkedIDs = mergeIDs(completed.linkedSessionIDs, unknown.linkedSessionIDs)
+                    let primaryID = linkedIDs.first ?? completed.id
+                    let mergedSource: EncounterSource =
+                        (isLocalAutoSource(completed.source) || isLocalAutoSource(unknown.source))
+                        ? .auto(sessionID: primaryID)
+                        : .peerCompleted(sessionID: primaryID)
+                    keptAutomatic[idx].encounter = ResolvedEncounter(
+                        id: primaryID,
+                        source: mergedSource,
+                        linkedSessionIDs: linkedIDs,
+                        startedAt: mergedStart,
+                        endedAt: mergedEnd,
+                        status: .completed,
+                        connectionPath: completed.connectionPath ?? unknown.connectionPath
+                    )
+                } else {
+                    let primaryID = unknown.linkedSessionIDs.first ?? unknown.id
+                    let resolvedSource: EncounterSource = isLocalAutoSource(unknown.source)
+                        ? .auto(sessionID: primaryID)
+                        : .peerCompleted(sessionID: primaryID)
+                    keptAutomatic.append((
+                        ResolvedEncounter(
+                            id: primaryID,
+                            source: resolvedSource,
+                            linkedSessionIDs: unknown.linkedSessionIDs,
+                            startedAt: unknown.startedAt,
+                            endedAt: suppressedLoc.endedAt,
+                            status: .completed,
+                            connectionPath: unknown.connectionPath
+                        ),
+                        pairID
+                    ))
+                }
+                continue
+            }
+
+            keptAutomatic.append(unknownEntry)
+        }
+
+        automaticEntries = keptAutomatic
     }
 
     private static func makeSlice(

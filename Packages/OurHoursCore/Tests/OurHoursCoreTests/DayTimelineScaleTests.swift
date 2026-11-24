@@ -90,4 +90,21 @@ struct DayTimelineScaleTests {
         #expect(abs((y700 - y630) - 48.0) < 0.001)
         #expect(y630 > 0) // Focus clamp keeps nearby bounds comfortably on screen
     }
+
+    @Test func displayMinuteFloorsConsistentlyWithoutEndBeforeStartInversion() throws {
+        let dayStart = try date("2026-11-23T00:00:00+09:00")
+        let endFirst = try date("2026-11-23T02:04:15+09:00")
+        let startSecond = try date("2026-11-23T02:04:30+09:00")
+        let beforeMidnight = try date("2026-11-23T23:59:45+09:00")
+        let exactMidnight = try date("2026-11-24T00:00:00+09:00")
+
+        let firstEndMinute = DayTimelineScale.displayMinute(for: endFirst, dayStart: dayStart)
+        let secondStartMinute = DayTimelineScale.displayMinute(for: startSecond, dayStart: dayStart)
+        #expect(firstEndMinute == 124) // 2:04
+        #expect(secondStartMinute == 124) // 2:04 (never 2:05 vs 2:04)
+        #expect(firstEndMinute <= secondStartMinute)
+
+        #expect(DayTimelineScale.displayMinute(for: beforeMidnight, dayStart: dayStart) == 1439)
+        #expect(DayTimelineScale.displayMinute(for: exactMidnight, dayStart: dayStart) == 1440)
+    }
 }

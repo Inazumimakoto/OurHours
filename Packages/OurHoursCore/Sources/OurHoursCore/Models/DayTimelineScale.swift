@@ -19,6 +19,10 @@ public struct DayTimelineScale: Sendable, Equatable {
         self.maxHour = clampedMax
     }
 
+    public static func displayMinute(for date: Date, dayStart: Date) -> Int {
+        max(0, min(1440, Int(floor(date.timeIntervalSince(dayStart) / 60.0))))
+    }
+
     public static func compute(
         for slices: [DayEncounterSlice],
         dayStart: Date,
@@ -34,12 +38,12 @@ public struct DayTimelineScale: Sendable, Equatable {
         }
 
         for slice in slices {
-            let sMin = max(0, min(1440, Int(floor(slice.sliceStart.timeIntervalSince(dayStart) / 60.0))))
+            let sMin = displayMinute(for: slice.sliceStart, dayStart: dayStart)
             let eMin: Int
             switch slice.status {
             case .completed:
                 if let end = slice.sliceEnd {
-                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                    eMin = max(sMin, displayMinute(for: end, dayStart: dayStart))
                 } else {
                     eMin = min(1440, sMin + 60)
                 }
@@ -47,9 +51,9 @@ public struct DayTimelineScale: Sendable, Equatable {
                 eMin = min(1440, sMin + 60)
             case .active:
                 if let end = slice.sliceEnd {
-                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                    eMin = max(sMin, displayMinute(for: end, dayStart: dayStart))
                 } else {
-                    let liveMin = Int(ceil(now.timeIntervalSince(dayStart) / 60.0))
+                    let liveMin = displayMinute(for: now, dayStart: dayStart)
                     eMin = min(1440, max(sMin + 30, liveMin))
                 }
             }

@@ -139,4 +139,125 @@ struct SessionCoordinatorTests {
         #expect(EncounterSession.mergedReferenceIntervals(from: raw, maxGapSeconds: 299).count == 4)
         #expect(raw[4] == a)
     }
+
+    @Test func heartbeatUpdatesLastSeenAtAndPreservesAcrossTerminatedReconcile() {
+        var coordinator = SessionCoordinator()
+        #expect(coordinator.recordActiveHeartbeat(at: start.addingTimeInterval(300)) == nil)
+
+        let started = coordinator.linkAuthenticated(central, pairID: pairID, at: start, connectionPath: .scanDiscovery)
+        #expect(started?.lastSeenAt == nil)
+        #expect(coordinator.activeSession?.effectiveLastSeenAt == start)
+        #expect(coordinator.recordActiveHeartbeat(at: start.addingTimeInterval(179)) == nil)
+
+        let t1 = start.addingTimeInterval(180)
+        let pulsed = coordinator.recordActiveHeartbeat(at: t1)
+        #expect(pulsed?.lastSeenAt == t1)
+        #expect(coordinator.activeSession?.effectiveLastSeenAt == t1)
+        #expect(coordinator.recordActiveHeartbeat(at: t1) == nil)
+
+        coordinator.reconcileActiveSessionsOnLaunch(now: start.addingTimeInterval(500), restoredActiveLinks: [])
+        #expect(coordinator.sessions.count == 1)
+        #expect(coordinator.sessions[0].status == .unknownEnd)
+        #expect(coordinator.sessions[0].endReason == .terminatedWhileActive)
+        #expect(coordinator.sessions[0].lastSeenAt == t1)
+        #expect(coordinator.sessions[0].effectiveLastSeenAt == t1)
+    }
+
+    @Test func terminatedWhileActiveResumesWithinWindowUsingHeartbeat() {
+        let heartbeat = start.addingTimeInterval(1200)
+        let persisted = EncounterSession(
+            pairID: pairID,
+            startedAt: start,
+            lastSeenAt: heartbeat,
+            status: .active,
+            connectionPath: .scanDiscovery,
+            startRole: .central
+        )
+        var coordinator = SessionCoordinator(sessions: [persisted])
+        coordinator.reconcileActiveSessionsOnLaunch(now: heartbeat.addingTimeInterval(30), restoredActiveLinks: [])
+        #expect(coordinator.sessions[0].status == .unknownEnd)
+
+        let reconnectAt = heartbeat.addingTimeInterval(500)
+        let resumed = coordinator.linkAuthenticated(
+            peripheral,
+            pairID: pairID,
+            at: reconnectAt,
+            connectionPath: .incomingPeripheral
+        )
+        #expect(resumed?.id == persisted.id)
+        #expect(resumed?.status == .active)
+        #expect(resumed?.startedAt == start)
+        #expect(resumed?.endedAt == nil)
+        #expect(resumed?.endReason == nil)
+        #expect(resumed?.lastSeenAt == reconnectAt)
+        #expect(coordinator.sessions.count == 1)
+
+        let end = start.addingTimeInterval(3600)
+        let completed = coordinator.linkDisconnected(peripheral, at: end, endReason: .disconnected)
+        #expect(completed?.id == persisted.id)
+        #expect(completed?.durationSeconds == 3600)
+    }
+
+    @Test func terminatedWhileActiveDoesNotResumePastWindowOrMismatch() {
+        let heartbeat = start.addingTimeInterval(600)
+        let terminated = EncounterSession(
+            pairID: pairID,
+            startedAt: start,
+            lastSeenAt: heartbeat,
+            status: .unknownEnd,
+            connectionPath: .scanDiscovery,
+            startRole: .central,
+            endReason: .terminatedWhileActive
+        )
+        var expiredCoordinator = SessionCoordinator(sessions: [terminated])
+        let lateSession = expiredCoordinator.linkAuthenticated(
+            central,
+            pairID: pairID,
+            at: heartbeat.addingTimeInterval(BLEConstants.terminatedSessionResumeWindowSeconds + 1),
+            connectionPath: .scanDiscovery
+        )
+        #expect(lateSession?.id != terminated.id)
+        #expect(expiredCoordinator.sessions.count == 2)
+        #expect(expiredCoordinator.sessions[0].status == .unknownEnd)
+
+        var wrongReasonSession = terminated
+        wrongReasonSession.endReason = .disconnected
+        var reasonCoordinator = SessionCoordinator(sessions: [wrongReasonSession])
+        let reasonNew = reasonCoordinator.linkAuthenticated(
+            central,
+            pairID: pairID,
+            at: heartbeat.addingTimeInterval(60),
+            connectionPath: .scanDiscovery
+        )
+        #expect(reasonNew?.id != terminated.id)
+        #expect(reasonCoordinator.sessions.count == 2)
+
+        var pairCoordinator = SessionCoordinator(sessions: [terminated])
+        let otherPairSession = pairCoordinator.linkAuthenticated(
+            central,
+            pairID: UUID(),
+            at: heartbeat.addingTimeInterval(60),
+            connectionPath: .scanDiscovery
+        )
+        #expect(otherPairSession?.id != terminated.id)
+        #expect(pairCoordinator.sessions.count == 2)
+    }
+
+    @Test func legacySessionJSONWithoutLastSeenAtDecodes() throws {
+        let json = """
+        {
+          "id": "11111111-1111-1111-1111-111111111111",
+          "pairID": "22222222-2222-2222-2222-222222222222",
+          "startedAt": 1700000000,
+          "status": "active",
+          "connectionPath": "scanDiscovery",
+          "startRole": "central"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let decoded = try decoder.decode(EncounterSession.self, from: Data(json.utf8))
+        #expect(decoded.lastSeenAt == nil)
+        #expect(decoded.effectiveLastSeenAt == Date(timeIntervalSince1970: 1_700_000_000))
+    }
 }

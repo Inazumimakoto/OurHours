@@ -135,6 +135,9 @@ struct OurHoursBLEEngineTests {
     @Test func bleTimingAndAuthCooldownClassification() throws {
         #expect(BLEConstants.authTimeoutSeconds < 10)
         #expect(BLEConstants.authTimeoutSeconds == 6)
+        #expect(BLEConstants.launchReconnectGraceSeconds == 20)
+        #expect(BLEConstants.activeSessionHeartbeatSeconds == 180)
+        #expect(BLEConstants.terminatedSessionResumeWindowSeconds == 600)
         #expect(BLEConstants.knownPeerAuthFailureCooldownSeconds == 15)
 
         #if DEBUG

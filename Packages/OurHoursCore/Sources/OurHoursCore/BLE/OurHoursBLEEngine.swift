@@ -68,6 +68,9 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     private var centralStateReceived = false
     private var peripheralStateReceived = false
     private var launchReconciled = false
+    private var launchGraceActive = false
+    private var launchGraceToken: UInt64 = 0
+    private var heartbeatTimer: DispatchSourceTimer?
     private static let eventLimit = 200
 
     public init(
@@ -85,6 +88,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     }
 
     deinit {
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
         onQueue {
             for continuation in continuations.values { continuation.finish() }
         }
@@ -94,15 +99,24 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         onQueue {
             guard centralManager == nil else { return }
             record(.lifecycle, "started", "Started BLE engine.")
+            launchGraceToken &+= 1
+            let token = launchGraceToken
+            let shouldUseGrace = !launchReconciled && coordinator.activeSession != nil && canRecord
+            launchGraceActive = shouldUseGrace
             let centralOptions: [String: Any]? = enableStateRestoration
                 ? [CBCentralManagerOptionRestoreIdentifierKey: BLEConstants.centralRestoreIdentifier] : nil
             let peripheralOptions: [String: Any]? = enableStateRestoration
                 ? [CBPeripheralManagerOptionRestoreIdentifierKey: BLEConstants.peripheralRestoreIdentifier] : nil
             centralManager = CBCentralManager(delegate: self, queue: queue, options: centralOptions)
             peripheralManager = CBPeripheralManager(delegate: self, queue: queue, options: peripheralOptions)
-            queue.asyncAfter(deadline: .now() + 2 * BLEConstants.authTimeoutSeconds) { [weak self] in
-                self?.finishLaunch()
-                self?.publish()
+            let fallbackDelay = shouldUseGrace
+                ? BLEConstants.launchReconnectGraceSeconds
+                : 2 * BLEConstants.authTimeoutSeconds
+            queue.asyncAfter(deadline: .now() + fallbackDelay) { [weak self] in
+                guard let self, self.launchGraceToken == token else { return }
+                self.launchGraceActive = false
+                self.finishLaunch()
+                self.publish()
             }
             publish()
         }
@@ -251,6 +265,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             cooldowns.removeAll()
             coordinator = SessionCoordinator(sessions: savedSessions)
             launchReconciled = false
+            launchGraceActive = false
+            launchGraceToken &+= 1
             finishLaunch()
             lastConnectionPath = nil
             lastAuthDate = nil
@@ -265,6 +281,9 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             do {
                 try logStore.clearLogs()
                 tearDownLinks()
+                launchReconciled = false
+                launchGraceActive = false
+                launchGraceToken &+= 1
                 coordinator = SessionCoordinator()
                 events.removeAll()
                 lastErrorMessage = nil
@@ -303,6 +322,10 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         kind: String, message: String, source: String, extraMetadata: [String: String]
     ) {
         let now = Date()
+        if coordinator.recordActiveHeartbeat(at: now, minimumInterval: 30) != nil {
+            persistSessions()
+            publish()
+        }
         var recoveredSomething = false
 
         for peer in Array(centralPeers.values)
@@ -440,7 +463,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     }
 
     private func reconcileLaunchIfReady() {
-        guard centralStateReceived, peripheralStateReceived,
+        guard !launchGraceActive,
+              centralStateReceived, peripheralStateReceived,
               !centralPeers.values.contains(where: { $0.path == .restoredConnection && $0.phase == .authenticating }),
               !centralPeers.values.contains(where: { $0.restoredCleanupID != nil }),
               restoredCentrals.isEmpty,
@@ -453,6 +477,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     private func finishLaunch(restoredLink: ActiveLinkKey? = nil) {
         guard !launchReconciled else { return }
         launchReconciled = true
+        launchGraceActive = false
+        launchGraceToken &+= 1
         guard let session = coordinator.activeSession else { return }
         let links: Set<ActiveLinkKey>
         if let restoredLink, session.pairID == pairConfiguration?.pairID {
@@ -464,11 +490,12 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         persistSessions()
         record(.session, "launchReconciled", "Reconciled the previous active session.",
                metadata: ["restored": String(!links.isEmpty)])
+        updateHeartbeatTimer()
     }
 
     private func authenticated(_ link: ActiveLinkKey, path: ConnectionPath) {
         guard let pairID = pairConfiguration?.pairID, canRecord else { return }
-        if path == .restoredConnection {
+        if !launchReconciled, path == .restoredConnection || launchGraceActive {
             finishLaunch(restoredLink: link)
         } else {
             reconcileLaunchIfReady()
@@ -486,8 +513,18 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             link, pairID: pairID, at: now, connectionPath: path, batteryLevel: metrics.batteryLevel()
         ) {
             persistSessions()
-            record(.session, "sessionStarted", "Started an encounter.", at: now, metadata: ["id": session.id.uuidString])
+            let isResumed = now.timeIntervalSince(session.startedAt) > 1
+            record(
+                .session,
+                isResumed ? "sessionResumed" : "sessionStarted",
+                isResumed ? "Resumed a recently interrupted encounter." : "Started an encounter.",
+                at: now,
+                metadata: ["id": session.id.uuidString]
+            )
+        } else if coordinator.recordActiveHeartbeat(at: now, minimumInterval: 0) != nil {
+            persistSessions()
         }
+        updateHeartbeatTimer()
     }
 
     private func disconnected(
@@ -504,8 +541,35 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
 
     private func didComplete(_ session: EncounterSession) {
         persistSessions()
+        updateHeartbeatTimer()
         record(.session, "sessionCompleted", "Completed an encounter.", at: session.endedAt ?? Date(),
                metadata: ["id": session.id.uuidString, "reason": session.endReason?.rawValue ?? "unknown"])
+    }
+
+    private func updateHeartbeatTimer() {
+        guard coordinator.activeSession != nil, !coordinator.activeLinks.isEmpty else {
+            heartbeatTimer?.cancel()
+            heartbeatTimer = nil
+            return
+        }
+        guard heartbeatTimer == nil else { return }
+        let interval = BLEConstants.activeSessionHeartbeatSeconds
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(15))
+        timer.setEventHandler { [weak self] in
+            self?.recordHeartbeatTick()
+        }
+        heartbeatTimer = timer
+        timer.resume()
+    }
+
+    private func recordHeartbeatTick() {
+        guard coordinator.recordActiveHeartbeat(at: Date()) != nil else {
+            updateHeartbeatTimer()
+            return
+        }
+        persistSessions()
+        publish()
     }
 
     private func stopRecording(reason: SessionEndReason) {
@@ -519,6 +583,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     }
 
     private func tearDownLinks() {
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
         if centralManager?.state == .poweredOn {
             centralManager?.stopScan()
             for peer in centralPeers.values { cancel(peer) }

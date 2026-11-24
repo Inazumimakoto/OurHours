@@ -22,6 +22,7 @@ public struct EncounterSession: Codable, Sendable, Equatable, Identifiable {
     public let pairID: UUID
     public let startedAt: Date
     public var endedAt: Date?
+    public var lastSeenAt: Date?
     public var status: SessionStatus
     public let connectionPath: ConnectionPath
     public let startRole: BLELinkRole
@@ -34,6 +35,7 @@ public struct EncounterSession: Codable, Sendable, Equatable, Identifiable {
 
     public init(
         id: UUID = UUID(), pairID: UUID, startedAt: Date, endedAt: Date? = nil,
+        lastSeenAt: Date? = nil,
         status: SessionStatus = .active, connectionPath: ConnectionPath, startRole: BLELinkRole,
         endReason: SessionEndReason? = nil, disconnectErrorDescription: String? = nil,
         isAutoReconnectPending: Bool? = nil, gapFromPreviousSessionSeconds: TimeInterval? = nil,
@@ -43,6 +45,7 @@ public struct EncounterSession: Codable, Sendable, Equatable, Identifiable {
         self.pairID = pairID
         self.startedAt = startedAt
         self.endedAt = endedAt
+        self.lastSeenAt = lastSeenAt
         self.status = status
         self.connectionPath = connectionPath
         self.startRole = startRole
@@ -57,6 +60,12 @@ public struct EncounterSession: Codable, Sendable, Equatable, Identifiable {
     public var durationSeconds: TimeInterval? {
         guard status == .completed, let endedAt else { return nil }
         return max(0, endedAt.timeIntervalSince(startedAt))
+    }
+
+    public var effectiveLastSeenAt: Date {
+        if let endedAt { return max(startedAt, endedAt) }
+        if let lastSeenAt { return max(startedAt, lastSeenAt) }
+        return startedAt
     }
 
     public static func mergedReferenceIntervals(

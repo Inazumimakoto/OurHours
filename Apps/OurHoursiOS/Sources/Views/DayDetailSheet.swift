@@ -99,7 +99,7 @@ private struct InlineTimeEditorState: Identifiable {
         if target == .draft || didTouchStart {
             return startHour * 60 + startMinute
         }
-        return max(0, min(1440, Int(floor(originalStart.timeIntervalSince(dayStart) / 60.0))))
+        return DayTimelineScale.displayMinute(for: originalStart, dayStart: dayStart)
     }
 
     var displayEndMinuteOnDay: Int {
@@ -107,7 +107,7 @@ private struct InlineTimeEditorState: Identifiable {
             return endHour == 24 ? 1440 : (endHour * 60 + endMinute)
         }
         if let originalEnd {
-            return max(0, min(1440, Int(ceil(originalEnd.timeIntervalSince(dayStart) / 60.0))))
+            return DayTimelineScale.displayMinute(for: originalEnd, dayStart: dayStart)
         }
         return endHour == 24 ? 1440 : (endHour * 60 + endMinute)
     }
@@ -1613,16 +1613,16 @@ struct DayDetailSheet: View {
 
     private func buildRenderItems(day: DaySummary, dayStart: Date) -> [TimelineRenderItem] {
         var items: [TimelineRenderItem] = []
-        let liveEndMinute = min(1440, Int(ceil(Date.now.timeIntervalSince(dayStart) / 60.0)))
+        let liveEndMinute = DayTimelineScale.displayMinute(for: Date.now, dayStart: dayStart)
 
         for slice in day.slices {
             let encounter = model.resolvedEncounters.first { $0.id == slice.encounterID }
             let target = encounter.map { TimelineTarget.existing($0) } ?? .draft
 
-            var sMin = max(0, min(1440, Int(floor(slice.sliceStart.timeIntervalSince(dayStart) / 60.0))))
+            var sMin = DayTimelineScale.displayMinute(for: slice.sliceStart, dayStart: dayStart)
             var eMin: Int
             if let end = slice.sliceEnd {
-                eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                eMin = max(sMin, DayTimelineScale.displayMinute(for: end, dayStart: dayStart))
             } else if slice.status == .unknownEnd {
                 eMin = min(1440, sMin + 45)
             } else {
@@ -1643,15 +1643,15 @@ struct DayDetailSheet: View {
                     eMin = editor.displayEndMinuteOnDay
                 }
             } else if isPendingTarget, let pending = pendingDragAdjustment {
-                sMin = max(0, min(1440, Int(floor(pending.proposedStart.timeIntervalSince(dayStart) / 60.0))))
+                sMin = DayTimelineScale.displayMinute(for: pending.proposedStart, dayStart: dayStart)
                 if let end = pending.proposedEnd {
-                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                    eMin = max(sMin, DayTimelineScale.displayMinute(for: end, dayStart: dayStart))
                 }
             }
 
             if slice.status == .active {
                 if let end = slice.sliceEnd {
-                    eMin = max(sMin, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0))))
+                    eMin = max(sMin, DayTimelineScale.displayMinute(for: end, dayStart: dayStart))
                 } else {
                     eMin = min(1440, max(sMin + 15, liveEndMinute))
                 }
@@ -1926,9 +1926,9 @@ struct DayDetailSheet: View {
             }
         }
         if let pending = pendingDragAdjustment {
-            extra.append(max(0, min(1440, Int(floor(pending.proposedStart.timeIntervalSince(dayStart) / 60.0)))))
+            extra.append(DayTimelineScale.displayMinute(for: pending.proposedStart, dayStart: dayStart))
             if let end = pending.proposedEnd {
-                extra.append(max(0, min(1440, Int(ceil(end.timeIntervalSince(dayStart) / 60.0)))))
+                extra.append(DayTimelineScale.displayMinute(for: end, dayStart: dayStart))
             }
         }
         return extra
@@ -2037,9 +2037,9 @@ struct DayDetailSheet: View {
     @ViewBuilder
     private func pendingAdjustmentBar(pending: PendingKnobAdjustment) -> some View {
         let now = Date()
-        let startMin = max(0, min(1440, Int(floor(pending.proposedStart.timeIntervalSince(pending.dayStart) / 60.0))))
+        let startMin = DayTimelineScale.displayMinute(for: pending.proposedStart, dayStart: pending.dayStart)
         let endMin = pending.proposedEnd.map {
-            max(startMin, min(1440, Int(ceil($0.timeIntervalSince(pending.dayStart) / 60.0))))
+            max(startMin, DayTimelineScale.displayMinute(for: $0, dayStart: pending.dayStart))
         }
         let current = pending.target.encounter.flatMap { model.currentResolvedEncounter(for: $0) }
         let mergePlan = self.mergePlan(for: pending, now: now)
@@ -2327,7 +2327,7 @@ struct DayDetailSheet: View {
 
         let baseStart = matchingPending?.proposedStart ?? enc.startedAt
         let baseEnd = isActive ? nil : (matchingPending?.proposedEnd ?? enc.endedAt)
-        let originalStartMinute = Int(floor(baseStart.timeIntervalSince(dayStart) / 60.0))
+        let originalStartMinute = DayTimelineScale.displayMinute(for: baseStart, dayStart: dayStart)
         let shownStartMinute = matchingPending == nil ? (item?.sliceStartMinute ?? originalStartMinute) : originalStartMinute
         let sMin = max(0, min(isActive ? 1439 : 1440, shownStartMinute))
         let eMin: Int
@@ -2336,7 +2336,7 @@ struct DayDetailSheet: View {
         } else if matchingPending == nil, let item, enc.status != .unknownEnd {
             eMin = item.sliceEndMinute
         } else {
-            eMin = baseEnd.map { max(sMin, min(1440, Int(ceil($0.timeIntervalSince(dayStart) / 60.0)))) }
+            eMin = baseEnd.map { max(sMin, DayTimelineScale.displayMinute(for: $0, dayStart: dayStart)) }
                 ?? min(1440, sMin + 60)
         }
         let hasUnknownOriginalEnd = enc.status == .unknownEnd && matchingPending == nil
@@ -2367,12 +2367,12 @@ struct DayDetailSheet: View {
         pendingDragAdjustment = nil
         var defaultStartMin = 13 * 60
         if let lastEnd = day.slices.compactMap(\.sliceEnd).max() {
-            let candidateMin = Int(ceil(lastEnd.timeIntervalSince(dayStart) / 60.0)) + 60
+            let candidateMin = DayTimelineScale.displayMinute(for: lastEnd, dayStart: dayStart) + 60
             if candidateMin >= 0 && candidateMin <= 22 * 60 {
                 let occupiedDefault = day.slices.contains { slice in
                     guard let se = slice.sliceEnd else { return false }
-                    let sM = Int(floor(slice.sliceStart.timeIntervalSince(dayStart) / 60.0))
-                    let eM = Int(ceil(se.timeIntervalSince(dayStart) / 60.0))
+                    let sM = DayTimelineScale.displayMinute(for: slice.sliceStart, dayStart: dayStart)
+                    let eM = DayTimelineScale.displayMinute(for: se, dayStart: dayStart)
                     return sM <= (defaultStartMin + 60) && eM >= defaultStartMin
                 }
                 if occupiedDefault {
