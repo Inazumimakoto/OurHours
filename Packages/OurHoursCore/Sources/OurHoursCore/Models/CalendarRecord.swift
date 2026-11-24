@@ -160,11 +160,13 @@ public enum EncounterCalendarAggregator {
         )
 
         var automaticEntries = activeAutomatic + coalesceShortGapBLE(mergedNonActive)
-        let completedBleIntervals = mergedDateIntervals(automaticEntries.compactMap { entry in
+        var completedBleIntervalsByPair: [UUID: [DateInterval]] = [:]
+        for entry in automaticEntries {
             let encounter = entry.encounter
-            guard encounter.status == .completed, let end = encounter.endedAt, end > encounter.startedAt else { return nil }
-            return DateInterval(start: encounter.startedAt, end: end)
-        })
+            guard encounter.status == .completed, let end = encounter.endedAt, end > encounter.startedAt else { continue }
+            completedBleIntervalsByPair[entry.pairID, default: []].append(DateInterval(start: encounter.startedAt, end: end))
+        }
+        let mergedBleByPair = completedBleIntervalsByPair.mapValues { mergedDateIntervals($0) }
 
         var locationEntries: [PairedEncounter] = []
         var suppressedUneditedLocations: [LocationMatchedSession] = []
@@ -193,8 +195,9 @@ public enum EncounterCalendarAggregator {
             case nil:
                 guard loc.endedAt > loc.startedAt else { continue }
                 let locInterval = DateInterval(start: loc.startedAt, end: loc.endedAt)
-                let covered = coveredDuration(of: locInterval, by: completedBleIntervals)
-                if locInterval.duration > 0, (covered / locInterval.duration) >= 0.95 {
+                let covered = coveredDuration(of: locInterval, by: mergedBleByPair[loc.pairID] ?? [])
+                let uncovered = locInterval.duration - covered
+                if locInterval.duration > 0, (covered / locInterval.duration) >= 0.95, uncovered <= 300 {
                     suppressedUneditedLocations.append(loc)
                     continue
                 }

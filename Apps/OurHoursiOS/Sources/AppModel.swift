@@ -19,6 +19,7 @@ protocol LocationMonitoring {
     func enableAndRequestAuthorization()
     func disable()
     func requestFreshFix(source: LocationSampleSource)
+    func requestFreshFixAndWait(source: LocationSampleSource, timeoutSeconds: TimeInterval) async
 }
 
 extension LocationPresenceMonitor: LocationMonitoring {}
@@ -178,6 +179,9 @@ final class AppModel {
     private(set) var locationSyncState: LocationSyncState = .idle
     private var lastBLELocationRefreshAt = Date.distantPast
     private static let bleLocationRefreshCooldownSeconds: TimeInterval = 15 * 60
+    @ObservationIgnored private var pendingLocationSyncBgTaskID = UIBackgroundTaskIdentifier.invalid
+    @ObservationIgnored private var pendingHistorySyncBgTaskID = UIBackgroundTaskIdentifier.invalid
+    @ObservationIgnored private var lastPushLocationFixAt = Date.distantPast
 
     init(
         engine: OurHoursBLEEngine,
@@ -2166,7 +2170,7 @@ final class AppModel {
             return nil
         }
         if requestFreshFix {
-            locationMonitor.requestFreshFix(source: .manualSyncFix)
+            await locationMonitor.requestFreshFixAndWait(source: .manualSyncFix, timeoutSeconds: 4.0)
         }
         if let locationSyncTask { return await locationSyncTask.value }
         let generation = pairGeneration
@@ -2231,12 +2235,22 @@ final class AppModel {
         #endif
         guard let config = snapshot.pairConfiguration else { return .noData }
         let generation = pairGeneration
+        if isAutoRecordingEnabled {
+            engine.handleBackgroundWake(source: "remoteCloudKitPush")
+        }
         // A sync that was already running may have fetched before the pushed change.
         _ = await historySyncTask?.value
         guard isPairActive(config, generation: generation) else { return .noData }
         let history = await syncSharedHistoryNow()
         var location: LocationSyncOutcome?
         if isPairActive(config, generation: generation), locationMonitor.isEnabled, isAutoRecordingEnabled {
+            let now = Date.now
+            let captureStale = locationMonitor.lastCaptureDate.map { now.timeIntervalSince($0) > 600 } ?? true
+            let pushFixReady = now.timeIntervalSince(lastPushLocationFixAt) > 600
+            if locationMonitor.authorizationStatus == .authorizedAlways, captureStale, pushFixReady {
+                lastPushLocationFixAt = now
+                await locationMonitor.requestFreshFixAndWait(source: .significantChange, timeoutSeconds: 3.0)
+            }
             _ = await locationSyncTask?.value
             if isPairActive(config, generation: generation) {
                 location = await syncLocationNow(requestFreshFix: false)
@@ -2249,6 +2263,48 @@ final class AppModel {
         default:
             return .noData
         }
+    }
+
+    func handleProtectedDataAvailable() {
+        #if DEBUG
+        if isSandboxDemo { return }
+        #endif
+        engine.reloadConfigurationIfNeeded()
+        snapshot = engine.currentSnapshot()
+        if let pair = snapshot.pairConfiguration {
+            if let loadedJournal = try? journalStore.prepareForPairTransition(from: nil, to: pair.pairID) {
+                journal = loadedJournal
+            }
+            if let cachedPeer = try? peerSyncStore.load(), cachedPeer.pairID == pair.pairID {
+                peerSessions = cachedPeer.sessions
+            }
+        }
+        if let loadedLocation = try? locationStore.load() {
+            locationMatchedSessions = loadedLocation.matchedSessions
+        }
+        locationMonitor.startIfAuthorized()
+        if snapshot.isPaired {
+            scheduleHistorySync(delay: .seconds(1))
+            if locationMonitor.isEnabled && isAutoRecordingEnabled {
+                scheduleLocationSync(delay: .seconds(1))
+            }
+        }
+    }
+
+    func handleBackgroundAppRefresh() async -> Bool {
+        #if DEBUG
+        if isSandboxDemo { return false }
+        #endif
+        guard snapshot.isPaired else { return false }
+        if isAutoRecordingEnabled {
+            engine.handleBackgroundWake(source: "bgAppRefresh")
+            if locationMonitor.isEnabled && locationMonitor.authorizationStatus == .authorizedAlways {
+                await locationMonitor.requestFreshFixAndWait(source: .significantChange, timeoutSeconds: 5.0)
+                _ = await syncLocationNow(requestFreshFix: false)
+            }
+        }
+        _ = await syncSharedHistoryNow()
+        return true
     }
 
     func handleAcceptedExternalShare(_ metadata: CKShare.Metadata) {
@@ -2293,10 +2349,39 @@ final class AppModel {
         scheduleLocationSync(delay: .seconds(1))
     }
 
+    private func endScheduledBgTask(
+        _ keyPath: ReferenceWritableKeyPath<AppModel, UIBackgroundTaskIdentifier>,
+        matching expectedID: UIBackgroundTaskIdentifier? = nil
+    ) {
+        let current = self[keyPath: keyPath]
+        guard current != .invalid else { return }
+        if let expectedID, current != expectedID { return }
+        self[keyPath: keyPath] = .invalid
+        UIApplication.shared.endBackgroundTask(current)
+    }
+
     private func scheduleLocationSync(delay: Duration) {
         scheduledSyncTask?.cancel()
+        endScheduledBgTask(\.pendingLocationSyncBgTaskID)
+        let effectiveDelay = UIApplication.shared.applicationState == .background ? .milliseconds(250) : delay
+        var bgID = UIBackgroundTaskIdentifier.invalid
+        bgID = UIApplication.shared.beginBackgroundTask(withName: "OurHoursLocationSyncSchedule") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduledSyncTask?.cancel()
+                self?.endScheduledBgTask(\.pendingLocationSyncBgTaskID, matching: bgID)
+            }
+        }
+        pendingLocationSyncBgTaskID = bgID
+        let assignedID = bgID
         scheduledSyncTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            defer {
+                self?.endScheduledBgTask(\.pendingLocationSyncBgTaskID, matching: assignedID)
+            }
+            do {
+                try await Task.sleep(for: effectiveDelay)
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
             await self?.syncLocationNow(requestFreshFix: false)
         }
@@ -2304,8 +2389,26 @@ final class AppModel {
 
     private func scheduleHistorySync(delay: Duration) {
         scheduledHistorySyncTask?.cancel()
+        endScheduledBgTask(\.pendingHistorySyncBgTaskID)
+        let effectiveDelay = UIApplication.shared.applicationState == .background ? .milliseconds(250) : delay
+        var bgID = UIBackgroundTaskIdentifier.invalid
+        bgID = UIApplication.shared.beginBackgroundTask(withName: "OurHoursHistorySyncSchedule") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduledHistorySyncTask?.cancel()
+                self?.endScheduledBgTask(\.pendingHistorySyncBgTaskID, matching: bgID)
+            }
+        }
+        pendingHistorySyncBgTaskID = bgID
+        let assignedID = bgID
         scheduledHistorySyncTask = Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            defer {
+                self?.endScheduledBgTask(\.pendingHistorySyncBgTaskID, matching: assignedID)
+            }
+            do {
+                try await Task.sleep(for: effectiveDelay)
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
             await self?.syncSharedHistoryNow()
         }

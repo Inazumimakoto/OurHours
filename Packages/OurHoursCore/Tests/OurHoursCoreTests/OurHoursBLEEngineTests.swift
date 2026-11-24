@@ -33,6 +33,35 @@ private final class FailableSecretStorage: SecretStorage {
     }
 }
 
+private final class LoadFailableSecretStorage: SecretStorage {
+    private struct State {
+        var data: Data?
+        var shouldFailLoad = false
+    }
+
+    private struct MockLoadError: Error {}
+    private let state = Mutex(State())
+
+    func setShouldFailLoad(_ fail: Bool) {
+        state.withLock { $0.shouldFailLoad = fail }
+    }
+
+    func load() throws -> Data? {
+        try state.withLock {
+            if $0.shouldFailLoad { throw MockLoadError() }
+            return $0.data
+        }
+    }
+
+    func save(_ value: Data) {
+        state.withLock { $0.data = value }
+    }
+
+    func delete() {
+        state.withLock { $0.data = nil }
+    }
+}
+
 struct OurHoursBLEEngineTests {
     @Test func controlsPersistAndBroadcastSnapshots() async throws {
         let suite = "OurHoursCoreTests.\(UUID().uuidString)"
@@ -135,10 +164,16 @@ struct OurHoursBLEEngineTests {
     @Test func bleTimingAndAuthCooldownClassification() throws {
         #expect(BLEConstants.authTimeoutSeconds < 10)
         #expect(BLEConstants.authTimeoutSeconds == 6)
-        #expect(BLEConstants.launchReconnectGraceSeconds == 20)
+        #expect(BLEConstants.launchReconnectGraceSeconds == 25)
         #expect(BLEConstants.activeSessionHeartbeatSeconds == 180)
         #expect(BLEConstants.terminatedSessionResumeWindowSeconds == 600)
-        #expect(BLEConstants.knownPeerAuthFailureCooldownSeconds == 15)
+        #expect(BLEConstants.knownPeerConnectionFailureCooldownSeconds == 10)
+        #expect(BLEConstants.knownPeerAuthFailureCooldownSeconds == 10)
+        #expect(
+            BLEConstants.authTimeoutSeconds
+                + BLEConstants.knownPeerAuthFailureCooldownSeconds
+                + BLEConstants.authTimeoutSeconds < BLEConstants.launchReconnectGraceSeconds
+        )
 
         #if DEBUG
         #expect(BLEConstants.isDebugChannel)
@@ -165,9 +200,9 @@ struct OurHoursBLEEngineTests {
 
         let knownID = UUID()
         let unknownID = UUID()
-        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.expired) == 15)
-        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: invalidHandle) == 15)
-        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: genericError) == 15)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.expired) == 10)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: invalidHandle) == 10)
+        #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: genericError) == 10)
         #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.invalidTag) == 300)
         #expect(OurHoursBLEEngine.authFailureCooldown(for: knownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.wrongKeyEpoch) == 300)
         #expect(OurHoursBLEEngine.authFailureCooldown(for: unknownID, lastAuthenticatedPeripheralID: knownID, error: AuthError.expired) == 300)
@@ -248,5 +283,42 @@ struct OurHoursBLEEngineTests {
         #expect(engine.currentSnapshot().activeSession == active)
         #expect(engine.currentSnapshot().sessions == [other, historical, active])
         #expect(try log.loadSessions() == [other, historical, active])
+    }
+
+    @Test func reloadConfigurationIfNeededRecoversProtectedDataAfterInitialLoadFailure() async throws {
+        let suite = "OurHoursCoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storage = LoadFailableSecretStorage()
+        let configStore = PairConfigStore(secretStorage: storage, userDefaults: defaults)
+        let (configuration, _) = PairingPayloadCodec.makePairingBundle()
+        try configStore.savePairConfiguration(configuration)
+
+        storage.setShouldFailLoad(true)
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let logStore = EncounterLogStore(directory: directory)
+        let engine = OurHoursBLEEngine(configStore: configStore, logStore: logStore, enableStateRestoration: false)
+
+        var observer = engine.snapshotStream().makeAsyncIterator()
+        let initial = try #require(await observer.next())
+        #expect(initial.pairConfiguration == nil)
+        #expect(!initial.isPaired)
+
+        storage.setShouldFailLoad(false)
+        engine.reloadConfigurationIfNeeded()
+
+        var recovered: EngineSnapshot?
+        for _ in 0..<5 {
+            guard let next = await observer.next() else { break }
+            recovered = next
+            if next.pairConfiguration != nil && next.recentEvents.contains(where: { $0.kind == "protectedDataReloaded" }) {
+                break
+            }
+        }
+        let finalSnapshot = try #require(recovered)
+        #expect(finalSnapshot.pairConfiguration == configuration)
+        #expect(finalSnapshot.isPaired)
+        #expect(finalSnapshot.recentEvents.contains { $0.kind == "protectedDataReloaded" })
     }
 }

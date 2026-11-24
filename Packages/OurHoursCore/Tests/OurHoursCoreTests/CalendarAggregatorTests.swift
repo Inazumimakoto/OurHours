@@ -695,4 +695,49 @@ struct CalendarAggregatorTests {
         )
         #expect(preservedEditedUnknown.contains { $0.id == trailingUnknown.id && $0.status == .unknownEnd })
     }
+
+    @Test func locationSuppressionRespectsPairScopeAndUncoveredGapLimit() throws {
+        let base = try date("2026-11-01T00:00:00+09:00")
+        let locPairA = LocationMatchedSession(
+            id: UUID(),
+            pairID: pairID,
+            startedAt: base,
+            endedAt: base.addingTimeInterval(7_200),
+            averageDistanceMeters: 15
+        )
+        let otherPairBLE = EncounterSession(
+            pairID: UUID(),
+            startedAt: base,
+            endedAt: base.addingTimeInterval(7_200),
+            status: .completed,
+            connectionPath: .scanDiscovery,
+            startRole: .central
+        )
+        let crossPairResolved = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [otherPairBLE],
+            locationSessions: [locPairA],
+            journal: JournalSnapshot()
+        )
+        #expect(crossPairResolved.count == 2)
+        #expect(crossPairResolved.contains { $0.id == locPairA.id })
+        #expect(crossPairResolved.contains { $0.id == otherPairBLE.id })
+
+        // 20h location vs 19h15m BLE -> 96.25% covered, but 45m (2,700s > 300s) uncovered must not be suppressed.
+        let loc20h = LocationMatchedSession(
+            id: UUID(),
+            pairID: pairID,
+            startedAt: base,
+            endedAt: base.addingTimeInterval(72_000),
+            averageDistanceMeters: 20
+        )
+        let ble19h15m = session(base, base.addingTimeInterval(69_300))
+        let longUncoveredResolved = EncounterCalendarAggregator.resolveEncounters(
+            autoSessions: [ble19h15m],
+            locationSessions: [loc20h],
+            journal: JournalSnapshot()
+        )
+        #expect(longUncoveredResolved.contains {
+            $0.id == loc20h.id && $0.endedAt == base.addingTimeInterval(72_000)
+        })
+    }
 }

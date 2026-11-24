@@ -1,7 +1,9 @@
+import BackgroundTasks
 import CloudKit
 import CoreBluetooth
 import OurHoursCore
 import SwiftUI
+import Synchronization
 import UIKit
 
 @main
@@ -54,16 +56,69 @@ struct OurHoursiOSApp: App {
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
                     delegate.handleForegroundActivation()
+                } else if newPhase == .background {
+                    delegate.scheduleBackgroundAppRefresh()
                 }
             }
         }
     }
 }
 
+private final class BackgroundRefreshCoordinator: @unchecked Sendable {
+    private struct State {
+        var isCompleted = false
+        var isExpired = false
+        var workTask: Task<Void, Never>?
+    }
+
+    private let task: BGAppRefreshTask
+    private let state = Mutex(State())
+
+    init(task: BGAppRefreshTask) {
+        self.task = task
+    }
+
+    func attachWork(_ work: Task<Void, Never>) {
+        let shouldCancel = state.withLock { state -> Bool in
+            if state.isExpired || state.isCompleted {
+                return true
+            }
+            state.workTask = work
+            return false
+        }
+        if shouldCancel {
+            work.cancel()
+        }
+    }
+
+    func expire() {
+        let workToCancel = state.withLock { state -> Task<Void, Never>? in
+            state.isExpired = true
+            return state.workTask
+        }
+        workToCancel?.cancel()
+        complete(success: false)
+    }
+
+    func complete(success: Bool) {
+        let shouldComplete = state.withLock { state -> Bool in
+            guard !state.isCompleted else { return false }
+            state.isCompleted = true
+            state.workTask = nil
+            return true
+        }
+        if shouldComplete {
+            task.setTaskCompleted(success: success)
+        }
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
+    static let backgroundRefreshTaskID = "io.github.inazumimakoto.OurHours.refresh"
     @Published private(set) var appModel: AppModel?
     private var liveAppModel: AppModel?
+    private var protectedDataObserver: (any NSObjectProtocol)?
     #if DEBUG
     private var activePreviewHandle: DebugPreviewHandle?
     @Published private(set) var activeDebugPreset: DebugPreviewPreset?
@@ -94,12 +149,62 @@ final class AppDelegate: NSObject, UIApplicationDelegate, ObservableObject {
         appModel = model
         liveAppModel = model
         ShareSceneDelegate.appModel = model
+        protectedDataObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.liveAppModel?.handleProtectedDataAvailable()
+            }
+        }
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: Self.backgroundRefreshTaskID,
+            using: nil
+        ) { [weak self] task in
+            guard let refreshTask = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            let coordinator = BackgroundRefreshCoordinator(task: refreshTask)
+            refreshTask.expirationHandler = {
+                coordinator.expire()
+            }
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    coordinator.complete(success: false)
+                    return
+                }
+                self.scheduleBackgroundAppRefresh()
+                let work = Task { @MainActor [weak self] in
+                    let success = await self?.liveAppModel?.handleBackgroundAppRefresh() ?? false
+                    coordinator.complete(success: success)
+                }
+                coordinator.attachWork(work)
+            }
+        }
+        scheduleBackgroundAppRefresh()
         application.registerForRemoteNotifications()
         return true
     }
 
     func handleForegroundActivation() {
         liveAppModel?.handleForegroundActivation()
+    }
+
+    func scheduleBackgroundAppRefresh() {
+        #if DEBUG
+        if ScreenshotScene.current != nil { return }
+        #endif
+        guard let model = liveAppModel,
+              model.snapshot.isPaired,
+              model.isAutoRecordingEnabled else {
+            BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.backgroundRefreshTaskID)
+            return
+        }
+        let request = BGAppRefreshTaskRequest(identifier: Self.backgroundRefreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 30 * 60)
+        try? BGTaskScheduler.shared.submit(request)
     }
 
     #if DEBUG

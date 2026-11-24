@@ -11,6 +11,13 @@ public final class JournalStore: Sendable {
     private static let lock = Mutex(())
     public let directory: URL
     private var journalURL: URL { directory.appendingPathComponent("journal.json") }
+    private static var atomicWriteOptions: Data.WritingOptions {
+        #if os(iOS)
+        return [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+        return .atomic
+        #endif
+    }
 
     public init(directory: URL = URL.applicationSupportDirectory.appendingPathComponent("OurHours")) {
         self.directory = directory
@@ -517,7 +524,7 @@ public final class JournalStore: Sendable {
             }
             let data = try JSONEncoder().encode(merged)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: journalURL, options: .atomic)
+            try data.write(to: journalURL, options: Self.atomicWriteOptions)
             return (merged, true)
         }
     }
@@ -559,7 +566,7 @@ public final class JournalStore: Sendable {
             try update(&snapshot)
             let data = try JSONEncoder().encode(snapshot)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: journalURL, options: .atomic)
+            try data.write(to: journalURL, options: Self.atomicWriteOptions)
             return snapshot
         }
     }

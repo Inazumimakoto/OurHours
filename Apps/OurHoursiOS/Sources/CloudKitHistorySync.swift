@@ -98,15 +98,17 @@ actor CloudKitHistorySync {
                 let fetched = try await targetDatabase.records(for: [peerID, ownID])
                 let ownRecord = try CloudKitPairSpace.record(from: fetched[ownID])
                 var peerRecord = try CloudKitPairSpace.record(from: fetched[peerID])
-                let peerInZone = context != nil && peerRecord != nil
+                let zonePeerEnvelope = Self.envelope(from: peerRecord, config: config, role: config.localRole.opposite)
+                let peerInZone = context != nil && zonePeerEnvelope != nil
                 if peerInZone {
                     UserDefaults.standard.set(true, forKey: observationKey)
-                } else if context != nil, !UserDefaults.standard.bool(forKey: observationKey) {
+                } else if context != nil, zonePeerEnvelope == nil, !UserDefaults.standard.bool(forKey: observationKey) {
                     peerRecord = try await CloudKitPairSpace.record(
                         in: publicDatabase, withID: CKRecord.ID(recordName: peerName)
                     )
                 }
-                let peerEnvelope = Self.envelope(from: peerRecord, config: config, role: config.localRole.opposite)
+                let peerEnvelope = zonePeerEnvelope
+                    ?? Self.envelope(from: peerRecord, config: config, role: config.localRole.opposite)
 
                 var legacyOwnEnvelope: PartnerSyncEnvelope?
                 if context != nil, ownRecord == nil {

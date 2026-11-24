@@ -27,6 +27,7 @@ struct ScreenshotLocationMonitor: LocationMonitoring {
     func enableAndRequestAuthorization() {}
     func disable() {}
     func requestFreshFix(source: LocationSampleSource) {}
+    func requestFreshFixAndWait(source: LocationSampleSource, timeoutSeconds: TimeInterval) async {}
 }
 
 @MainActor

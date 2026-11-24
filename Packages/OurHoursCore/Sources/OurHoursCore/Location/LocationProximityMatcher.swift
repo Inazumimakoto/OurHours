@@ -6,11 +6,11 @@ public enum LocationProximityMatcher {
     public static let minProximityMeters = 65.0
     public static let maxProximityMeters = 150.0
     public static let stationaryPointPairMaxMeters = 120.0
-    public static let stationaryPointMaxGapSeconds: TimeInterval = 14_400
+    public static let stationaryPointMaxGapSeconds: TimeInterval = 43_200
     public static let singlePointWindowHalfSeconds: TimeInterval = 300
     public static let mergeGapSeconds: TimeInterval = 600
     public static let minCompletedDurationSeconds: TimeInterval = 180
-    private static let openVisitSafetyCapSeconds: TimeInterval = 18 * 3_600
+    private static let openVisitSafetyCapSeconds: TimeInterval = 48 * 3_600
 
     private struct LocationSpan {
         let start: Date
@@ -122,13 +122,24 @@ public enum LocationProximityMatcher {
             let time: Date
             let latitude: Double
             let longitude: Double
+            let accuracy: Double
         }
 
         var markers: [MovementMarker] = points.map {
-            MovementMarker(time: $0.timestamp, latitude: $0.latitude, longitude: $0.longitude)
+            MovementMarker(
+                time: $0.timestamp,
+                latitude: $0.latitude,
+                longitude: $0.longitude,
+                accuracy: $0.horizontalAccuracy
+            )
         }
         markers.append(contentsOf: visits.map {
-            MovementMarker(time: $0.arrivedAt, latitude: $0.latitude, longitude: $0.longitude)
+            MovementMarker(
+                time: $0.arrivedAt,
+                latitude: $0.latitude,
+                longitude: $0.longitude,
+                accuracy: $0.horizontalAccuracy
+            )
         })
         markers.sort { $0.time < $1.time }
 
@@ -141,12 +152,34 @@ public enum LocationProximityMatcher {
                 endDate = min(now, departedAt)
             } else {
                 let firstFarObservation = markers.first { marker in
-                    marker.time > visit.arrivedAt && haversineMeters(
+                    guard marker.time > visit.arrivedAt else { return false }
+                    let dist = haversineMeters(
                         lat1: visit.latitude, lon1: visit.longitude,
                         lat2: marker.latitude, lon2: marker.longitude
-                    ) > maxProximityMeters
+                    )
+                    let farThreshold = max(maxProximityMeters, visit.horizontalAccuracy + marker.accuracy)
+                    guard dist > farThreshold else { return false }
+                    if marker.accuracy > 65 {
+                        let returnDeadline = marker.time.addingTimeInterval(900)
+                        let returnedNearby = markers.contains { later in
+                            later.time > marker.time && later.time <= returnDeadline && haversineMeters(
+                                lat1: visit.latitude, lon1: visit.longitude,
+                                lat2: later.latitude, lon2: later.longitude
+                            ) <= 100
+                        }
+                        if returnedNearby { return false }
+                    }
+                    return true
                 }?.time
-                let safetyCap = min(now, visit.arrivedAt.addingTimeInterval(openVisitSafetyCapSeconds))
+                let latestNearbyAnchor = markers.last { marker in
+                    marker.time >= visit.arrivedAt
+                        && (firstFarObservation.map { marker.time < $0 } ?? true)
+                        && haversineMeters(
+                            lat1: visit.latitude, lon1: visit.longitude,
+                            lat2: marker.latitude, lon2: marker.longitude
+                        ) <= maxProximityMeters
+                }?.time ?? visit.arrivedAt
+                let safetyCap = min(now, latestNearbyAnchor.addingTimeInterval(openVisitSafetyCapSeconds))
                 endDate = firstFarObservation.map { min(safetyCap, $0) } ?? safetyCap
             }
             if endDate > visit.arrivedAt {
@@ -180,22 +213,42 @@ public enum LocationProximityMatcher {
                     let a = points[index]
                     let b = points[index + 1]
                     let gap = b.timestamp.timeIntervalSince(a.timestamp)
-                    guard gap > 0, gap <= stationaryPointMaxGapSeconds else { continue }
+                    guard gap > 0 else { continue }
                     let dist = haversineMeters(
                         lat1: a.latitude, lon1: a.longitude,
                         lat2: b.latitude, lon2: b.longitude
                     )
-                    guard dist <= stationaryPointPairMaxMeters else { continue }
-                    let wA = 1.0 / pow(max(5.0, a.horizontalAccuracy), 2.0)
-                    let wB = 1.0 / pow(max(5.0, b.horizontalAccuracy), 2.0)
-                    let totalW = wA + wB
-                    spans.append(LocationSpan(
-                        start: a.timestamp,
-                        end: b.timestamp,
-                        latitude: (a.latitude * wA + b.latitude * wB) / totalW,
-                        longitude: (a.longitude * wA + b.longitude * wB) / totalW,
-                        accuracy: max(a.horizontalAccuracy, b.horizontalAccuracy)
-                    ))
+                    if gap <= stationaryPointMaxGapSeconds && dist <= stationaryPointPairMaxMeters {
+                        let wA = 1.0 / pow(max(5.0, a.horizontalAccuracy), 2.0)
+                        let wB = 1.0 / pow(max(5.0, b.horizontalAccuracy), 2.0)
+                        let totalW = wA + wB
+                        spans.append(LocationSpan(
+                            start: a.timestamp,
+                            end: b.timestamp,
+                            latitude: (a.latitude * wA + b.latitude * wB) / totalW,
+                            longitude: (a.longitude * wA + b.longitude * wB) / totalW,
+                            accuracy: max(a.horizontalAccuracy, b.horizontalAccuracy)
+                        ))
+                    } else if b.horizontalAccuracy > 65, dist <= 250, index + 2 < points.count {
+                        let c = points[index + 2]
+                        let gapAC = c.timestamp.timeIntervalSince(a.timestamp)
+                        let distAC = haversineMeters(
+                            lat1: a.latitude, lon1: a.longitude,
+                            lat2: c.latitude, lon2: c.longitude
+                        )
+                        if gapAC > 0, gapAC <= stationaryPointMaxGapSeconds, distAC <= stationaryPointPairMaxMeters {
+                            let wA = 1.0 / pow(max(5.0, a.horizontalAccuracy), 2.0)
+                            let wC = 1.0 / pow(max(5.0, c.horizontalAccuracy), 2.0)
+                            let totalW = wA + wC
+                            spans.append(LocationSpan(
+                                start: a.timestamp,
+                                end: c.timestamp,
+                                latitude: (a.latitude * wA + c.latitude * wC) / totalW,
+                                longitude: (a.longitude * wA + c.longitude * wC) / totalW,
+                                accuracy: max(a.horizontalAccuracy, c.horizontalAccuracy)
+                            ))
+                        }
+                    }
                 }
             }
         }

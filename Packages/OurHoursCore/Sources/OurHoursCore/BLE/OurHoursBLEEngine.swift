@@ -1,5 +1,70 @@
 import CoreBluetooth
 import Foundation
+#if os(iOS)
+import Synchronization
+import UIKit
+#endif
+
+#if os(iOS)
+private final class BLEBackgroundTask: @unchecked Sendable {
+    private struct State {
+        var taskID = UIBackgroundTaskIdentifier.invalid
+        var isEnded = false
+    }
+
+    private let state = Mutex(State())
+
+    init(name: String, onExpire: (@Sendable () -> Void)? = nil) {
+        let start: @MainActor () -> Void = { [weak self] in
+            guard let self else { return }
+            let alreadyEnded = self.state.withLock { $0.isEnded }
+            guard !alreadyEnded else { return }
+            var assigned = UIBackgroundTaskIdentifier.invalid
+            assigned = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+                onExpire?()
+                self?.end()
+            }
+            let endImmediately = self.state.withLock { state in
+                if state.isEnded {
+                    return true
+                }
+                state.taskID = assigned
+                return false
+            }
+            if endImmediately && assigned != .invalid {
+                UIApplication.shared.endBackgroundTask(assigned)
+            }
+        }
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { start() }
+        } else {
+            Task { @MainActor in start() }
+        }
+    }
+
+    deinit {
+        end()
+    }
+
+    func end() {
+        let idToEnd = state.withLock { state -> UIBackgroundTaskIdentifier in
+            state.isEnded = true
+            let id = state.taskID
+            state.taskID = .invalid
+            return id
+        }
+        guard idToEnd != .invalid else { return }
+        let finish: @MainActor () -> Void = {
+            UIApplication.shared.endBackgroundTask(idToEnd)
+        }
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { finish() }
+        } else {
+            Task { @MainActor in finish() }
+        }
+    }
+}
+#endif
 
 /// CoreBluetooth objects and mutable engine state are confined to `queue`.
 public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
@@ -11,6 +76,7 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         let peripheral: CBPeripheral
         var path: ConnectionPath
         var phase = Phase.connecting
+        var phaseChangedAt = Date()
         var handshake: CentralAuthSession?
         var timeoutID: UUID?
         var legacyDisconnectID: UUID?
@@ -58,18 +124,27 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     private var lastAuthDate: Date?
     private var lastErrorMessage: String?
     private var centralPeers: [UUID: CentralPeer] = [:]
-    private var cooldowns: [UUID: DispatchTime] = [:]
+    private var cooldowns: [UUID: Date] = [:]
     private var peripheralPeers: [UUID: PeripheralPeer] = [:]
     private var service: CBMutableService?
     private var authCharacteristic: CBMutableCharacteristic?
     private var servicePublished = false
     private var advertisingStarting = false
+    private var peripheralRetryAttempt = 0
+    private var peripheralRetryToken: UInt64 = 0
     private var restoredCentrals: [CBCentral] = []
+    private var restoredPeripheralIDs: Set<UUID> = []
     private var centralStateReceived = false
     private var peripheralStateReceived = false
     private var launchReconciled = false
     private var launchGraceActive = false
     private var launchGraceToken: UInt64 = 0
+    private var needsProtectedConfigReload = false
+    private var needsProtectedSessionsReload = false
+    #if os(iOS)
+    private var launchGraceBackgroundTask: BLEBackgroundTask?
+    private var cooldownBackgroundTasks: [UUID: BLEBackgroundTask] = [:]
+    #endif
     private var heartbeatTimer: DispatchSourceTimer?
     private static let eventLimit = 200
 
@@ -91,6 +166,12 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         heartbeatTimer?.cancel()
         heartbeatTimer = nil
         onQueue {
+            #if os(iOS)
+            launchGraceBackgroundTask?.end()
+            launchGraceBackgroundTask = nil
+            for task in cooldownBackgroundTasks.values { task.end() }
+            cooldownBackgroundTasks.removeAll()
+            #endif
             for continuation in continuations.values { continuation.finish() }
         }
     }
@@ -103,6 +184,20 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             let token = launchGraceToken
             let shouldUseGrace = !launchReconciled && coordinator.activeSession != nil && canRecord
             launchGraceActive = shouldUseGrace
+            #if os(iOS)
+            launchGraceBackgroundTask?.end()
+            launchGraceBackgroundTask = nil
+            if shouldUseGrace {
+                launchGraceBackgroundTask = BLEBackgroundTask(name: "OurHoursLaunchGrace") { [weak self] in
+                    self?.queue.async { [weak self] in
+                        guard let self, self.launchGraceToken == token else { return }
+                        self.launchGraceActive = false
+                        self.finishLaunch()
+                        self.publish()
+                    }
+                }
+            }
+            #endif
             let centralOptions: [String: Any]? = enableStateRestoration
                 ? [CBCentralManagerOptionRestoreIdentifierKey: BLEConstants.centralRestoreIdentifier] : nil
             let peripheralOptions: [String: Any]? = enableStateRestoration
@@ -118,6 +213,35 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
                 self.finishLaunch()
                 self.publish()
             }
+            publish()
+        }
+    }
+
+    public func reloadConfigurationIfNeeded() {
+        onQueue {
+            guard pairConfiguration == nil || needsProtectedConfigReload || needsProtectedSessionsReload else { return }
+            var reloadedAny = false
+            if pairConfiguration == nil || needsProtectedConfigReload {
+                if let loadedConfig = try? configStore.loadPairConfiguration() {
+                    pairConfiguration = loadedConfig
+                    needsProtectedConfigReload = false
+                    reloadedAny = true
+                } else if pairConfiguration != nil {
+                    needsProtectedConfigReload = false
+                }
+            }
+            if needsProtectedSessionsReload && coordinator.sessions.isEmpty {
+                if let loadedSessions = try? logStore.loadSessions() {
+                    coordinator = SessionCoordinator(sessions: loadedSessions)
+                    needsProtectedSessionsReload = false
+                    launchReconciled = false
+                    reloadedAny = true
+                }
+            }
+            guard reloadedAny else { return }
+            record(.lifecycle, "protectedDataReloaded", "Reloaded protected configuration and session state.")
+            refreshRadios()
+            reconcileLaunchIfReady()
             publish()
         }
     }
@@ -173,7 +297,8 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
                 recordError(.storage, "pairSaveFailed", error)
                 return
             }
-            cooldowns.removeAll()
+            clearAllCooldowns()
+            needsProtectedConfigReload = false
             let credentialsChanged = pairConfiguration.map {
                 $0.pairID != config.pairID || $0.keyEpoch != config.keyEpoch
                     || $0.localRole != config.localRole || $0.sharedSecret != config.sharedSecret
@@ -192,10 +317,11 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         onQueue {
             defer { publish() }
             stopRecording(reason: .unpaired)
-            cooldowns.removeAll()
+            clearAllCooldowns()
             do {
                 try configStore.deletePairConfiguration()
                 pairConfiguration = nil
+                needsProtectedConfigReload = false
                 resetPeerHistory()
                 record(.settings, "unpaired", "Removed pair configuration.")
             } catch {
@@ -262,7 +388,7 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
                 return
             }
             tearDownLinks()
-            cooldowns.removeAll()
+            clearAllCooldowns()
             coordinator = SessionCoordinator(sessions: savedSessions)
             launchReconciled = false
             launchGraceActive = false
@@ -326,7 +452,9 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             persistSessions()
             publish()
         }
-        var recoveredSomething = false
+        peripheralRetryAttempt = 0
+        var recoveredSomething = purgeExpiredCooldowns(now: now)
+        let isForegroundCheck = (source == "foregroundCheck")
 
         for peer in Array(centralPeers.values)
         where peer.phase == .authenticating {
@@ -349,8 +477,45 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
             }
         }
 
-        if let knownID = lastAuthenticatedPeripheralID, cooldowns.removeValue(forKey: knownID) != nil {
+        if isForegroundCheck {
+            if !cooldowns.isEmpty {
+                clearAllCooldowns()
+                recoveredSomething = true
+            }
+        } else if let knownID = lastAuthenticatedPeripheralID, clearCooldown(for: knownID) {
             recoveredSomething = true
+        }
+
+        if coordinator.activeLinks.isEmpty {
+            let cancellingAgeThreshold: TimeInterval = isForegroundCheck ? 5 : 10
+            for (id, peer) in Array(centralPeers) {
+                switch peer.phase {
+                case .cancelling:
+                    if peer.peripheral.state == .disconnected
+                        || now.timeIntervalSince(peer.phaseChangedAt) >= cancellingAgeThreshold {
+                        centralPeers[id] = nil
+                        recoveredSomething = true
+                    }
+                case .connecting:
+                    if isForegroundCheck, peer.peripheral.state != .connected,
+                       now.timeIntervalSince(peer.phaseChangedAt) >= 10 {
+                        cancel(peer)
+                        centralPeers[id] = nil
+                        recoveredSomething = true
+                    }
+                case .reconnecting:
+                    let staleAge: TimeInterval = isForegroundCheck ? 10 : 300
+                    if peer.peripheral.state != .connected,
+                       now.timeIntervalSince(peer.phaseChangedAt) >= staleAge,
+                       (isForegroundCheck || peer.peripheral.state == .disconnected) {
+                        cancel(peer)
+                        centralPeers[id] = nil
+                        recoveredSomething = true
+                    }
+                case .authenticating, .authenticated:
+                    break
+                }
+            }
         }
 
         if canRecord && coordinator.activeLinks.isEmpty {
@@ -400,11 +565,13 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         do {
             coordinator = SessionCoordinator(sessions: try logStore.loadSessions())
         } catch {
+            needsProtectedSessionsReload = true
             failures.append(("sessionsLoadFailed", error))
         }
         do {
             pairConfiguration = try configStore.loadPairConfiguration()
         } catch {
+            needsProtectedConfigReload = true
             failures.append(("pairLoadFailed", error))
         }
         for (kind, error) in failures { recordError(.storage, kind, error) }
@@ -479,6 +646,11 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
         launchReconciled = true
         launchGraceActive = false
         launchGraceToken &+= 1
+        restoredPeripheralIDs.removeAll()
+        #if os(iOS)
+        launchGraceBackgroundTask?.end()
+        launchGraceBackgroundTask = nil
+        #endif
         guard let session = coordinator.activeSession else { return }
         let links: Set<ActiveLinkKey>
         if let restoredLink, session.pairID == pairConfiguration?.pairID {
@@ -585,6 +757,10 @@ public final class OurHoursBLEEngine: NSObject, @unchecked Sendable {
     private func tearDownLinks() {
         heartbeatTimer?.cancel()
         heartbeatTimer = nil
+        #if os(iOS)
+        launchGraceBackgroundTask?.end()
+        launchGraceBackgroundTask = nil
+        #endif
         if centralManager?.state == .poweredOn {
             centralManager?.stopScan()
             for peer in centralPeers.values { cancel(peer) }
@@ -651,7 +827,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     private func connect(_ peripheral: CBPeripheral, path: ConnectionPath) {
         let id = peripheral.identifier
-        guard let manager = centralManager, !hasAuthenticatedCentral, cooldowns[id] == nil else { return }
+        guard let manager = centralManager, !hasAuthenticatedCentral, !isInCooldown(id) else { return }
         if centralPeers[id] != nil { return }
         let peer = CentralPeer(peripheral, path: path)
         centralPeers[id] = peer
@@ -664,6 +840,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard peer.phase != .cancelling else { return }
         let shouldRemoveImmediately = peer.peripheral.state == .disconnected
         peer.phase = .cancelling
+        peer.phaseChangedAt = Date()
         peer.timeoutID = nil
         peer.authStartedAt = nil
         peer.invalidHandleRetried = false
@@ -675,12 +852,60 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
-    private func enterCooldown(_ id: UUID, duration: TimeInterval = BLEConstants.failedPeerCooldownSeconds) {
-        let deadline = DispatchTime.now() + duration
-        cooldowns[id] = deadline
-        queue.asyncAfter(deadline: deadline) { [weak self] in
-            guard let self, cooldowns[id] == deadline else { return }
+    private func isInCooldown(_ id: UUID, now: Date = Date()) -> Bool {
+        guard let deadline = cooldowns[id] else { return false }
+        if now >= deadline {
             cooldowns[id] = nil
+            #if os(iOS)
+            cooldownBackgroundTasks.removeValue(forKey: id)?.end()
+            #endif
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    private func clearCooldown(for id: UUID) -> Bool {
+        let removed = cooldowns.removeValue(forKey: id) != nil
+        #if os(iOS)
+        cooldownBackgroundTasks.removeValue(forKey: id)?.end()
+        #endif
+        return removed
+    }
+
+    @discardableResult
+    private func purgeExpiredCooldowns(now: Date = Date()) -> Bool {
+        var purged = false
+        for (id, deadline) in cooldowns where now >= deadline {
+            cooldowns.removeValue(forKey: id)
+            #if os(iOS)
+            cooldownBackgroundTasks.removeValue(forKey: id)?.end()
+            #endif
+            purged = true
+        }
+        return purged
+    }
+
+    private func clearAllCooldowns() {
+        cooldowns.removeAll()
+        #if os(iOS)
+        for task in cooldownBackgroundTasks.values { task.end() }
+        cooldownBackgroundTasks.removeAll()
+        #endif
+    }
+
+    private func enterCooldown(_ id: UUID, duration: TimeInterval = BLEConstants.failedPeerCooldownSeconds) {
+        let deadline = Date().addingTimeInterval(duration)
+        cooldowns[id] = deadline
+        #if os(iOS)
+        cooldownBackgroundTasks.removeValue(forKey: id)?.end()
+        if duration <= 25 {
+            cooldownBackgroundTasks[id] = BLEBackgroundTask(name: "OurHoursBLECooldownRetry")
+        }
+        #endif
+        queue.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self, cooldowns[id] == deadline else { return }
+            _ = clearCooldown(for: id)
             // Discovery with duplicate filtering may already have seen this peer.
             if centralManager?.isScanning == true { centralManager?.stopScan() }
             refreshCentral(lookup: true)
@@ -751,6 +976,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         let id = peer.peripheral.identifier
         let token = UUID()
         peer.phase = .authenticating
+        peer.phaseChangedAt = Date()
         peer.timeoutID = token
         peer.authStartedAt = Date()
         peer.awaitingServerAuth = false
@@ -911,6 +1137,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
                      errorDescription: errorDescription, isReconnecting: isReconnecting)
         if isReconnecting == true, peer.phase != .cancelling, canRecord {
             peer.phase = .reconnecting
+            peer.phaseChangedAt = Date()
             peer.path = .autoReconnect
             peer.handshake = nil
             peer.timeoutID = nil
@@ -1014,6 +1241,7 @@ extension OurHoursBLEEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
             if peer.awaitingServerAuth {
                 try handshake.receiveServerAuth(data)
                 peer.phase = .authenticated
+                peer.phaseChangedAt = Date()
                 peer.timeoutID = nil
                 peer.authStartedAt = nil
                 peer.invalidHandleRetried = false
@@ -1088,6 +1316,9 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
     private func discardPeripheralService() {
         peripheralPeers.removeAll()
         restoredCentrals.removeAll()
+        restoredPeripheralIDs.removeAll()
+        peripheralRetryAttempt = 0
+        peripheralRetryToken &+= 1
         servicePublished = false
         authCharacteristic = nil
         if let manager = peripheralManager, manager.state == .poweredOn {
@@ -1097,6 +1328,20 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
             advertisingStarting = false
         }
         service = nil
+    }
+
+    private func schedulePeripheralRetry() {
+        guard canRecord, peripheralManager?.state == .poweredOn, peripheralRetryAttempt < 3 else { return }
+        let delays: [TimeInterval] = [5, 15, 30]
+        let delay = delays[peripheralRetryAttempt]
+        peripheralRetryAttempt += 1
+        peripheralRetryToken &+= 1
+        let token = peripheralRetryToken
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.peripheralRetryToken == token else { return }
+            self.refreshPeripheral()
+            self.publish()
+        }
     }
 
     private func startPeripheralAuth(_ central: CBCentral, path: ConnectionPath) {
@@ -1149,6 +1394,7 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
         record(.peripheral, "stateChanged", peripheral.state.description)
         if peripheral.state == .poweredOn {
             peripheralStateReceived = true
+            peripheralRetryAttempt = 0
             refreshPeripheral()
             let subscribed = restoredCentrals
             restoredCentrals.removeAll()
@@ -1175,6 +1421,7 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
             authCharacteristic = characteristic
             servicePublished = true
             restoredCentrals = characteristic.subscribedCentrals ?? []
+            restoredPeripheralIDs = Set(restoredCentrals.map(\.identifier))
         }
         record(.lifecycle, "peripheralRestored", "Restored peripheral state.",
                metadata: ["subscribers": String(restoredCentrals.count)])
@@ -1187,8 +1434,10 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
             recordError(.peripheral, "servicePublicationFailed", error)
             self.service = nil
             authCharacteristic = nil
+            schedulePeripheralRetry()
         } else {
             servicePublished = true
+            peripheralRetryAttempt = 0
             refreshPeripheral()
         }
         publish()
@@ -1199,9 +1448,11 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
         advertisingStarting = false
         if let error {
             recordError(.peripheral, "advertisingFailed", error)
+            schedulePeripheralRetry()
         } else if !canRecord || !advertisingOverrideEnabled {
             if peripheral.state == .poweredOn { peripheral.stopAdvertising() }
         } else {
+            peripheralRetryAttempt = 0
             record(.peripheral, "advertising", "Started BLE advertising.")
         }
         publish()
@@ -1296,8 +1547,15 @@ extension OurHoursBLEEngine: CBPeripheralManagerDelegate {
     ) {
         guard peripheral === peripheralManager, characteristic === authCharacteristic else { return }
         let id = central.identifier
+        let wasRestoredSubscriber = restoredPeripheralIDs.contains(id)
+            || restoredCentrals.contains { $0.identifier == id }
+            || peripheralPeers[id]?.path == .restoredConnection
+        if !launchReconciled, wasRestoredSubscriber, coordinator.activeSession != nil {
+            finishLaunch(restoredLink: .peripheral(id))
+        }
         peripheralPeers[id] = nil
         restoredCentrals.removeAll { $0.identifier == id }
+        restoredPeripheralIDs.remove(id)
         record(.peripheral, "unsubscribed", "BLE central unsubscribed.", metadata: ["peerID": id.uuidString])
         disconnected(.peripheral(id), reason: .peerUnsubscribed)
         refreshCentral(lookup: true)

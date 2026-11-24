@@ -72,15 +72,23 @@ actor CloudKitLocationSync {
                 if context != nil {
                     if !remotePeerBuckets.isEmpty {
                         UserDefaults.standard.set(true, forKey: observationKey)
-                    } else if peerRecords.isEmpty, !UserDefaults.standard.bool(forKey: observationKey) {
-                        remotePeerBuckets = try await fetchLegacyBuckets(
+                    }
+                    if remotePeerBuckets.count < uploadKeys.count,
+                       !UserDefaults.standard.bool(forKey: observationKey) {
+                        let legacyPeer = try await fetchLegacyBuckets(
                             days: uploadKeys, role: peerRole, config: config, in: publicDatabase
                         )
+                        for (day, bucket) in legacyPeer where remotePeerBuckets[day] == nil {
+                            remotePeerBuckets[day] = bucket
+                        }
                     }
-                    if ownRecords.isEmpty {
-                        remoteOwnBuckets = try await fetchLegacyBuckets(
+                    if remoteOwnBuckets.count < uploadKeys.count {
+                        let legacyOwn = try await fetchLegacyBuckets(
                             days: uploadKeys, role: config.localRole, config: config, in: publicDatabase
                         )
+                        for (day, bucket) in legacyOwn where remoteOwnBuckets[day] == nil {
+                            remoteOwnBuckets[day] = bucket
+                        }
                     }
                 }
 

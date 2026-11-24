@@ -5,6 +5,13 @@ public final class PartnerSyncStore: Sendable {
     private static let lock = Mutex(())
     public let directory: URL
     private var fileURL: URL { directory.appendingPathComponent("peer_sync.json") }
+    private static var atomicWriteOptions: Data.WritingOptions {
+        #if os(iOS)
+        return [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+        return .atomic
+        #endif
+    }
 
     public init(directory: URL = URL.applicationSupportDirectory.appendingPathComponent("OurHours")) {
         self.directory = directory
@@ -32,7 +39,7 @@ public final class PartnerSyncStore: Sendable {
             encoder.dateEncodingStrategy = .secondsSince1970
             let data = try encoder.encode(cache)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: fileURL, options: .atomic)
+            try data.write(to: fileURL, options: Self.atomicWriteOptions)
             return cache
         }
     }

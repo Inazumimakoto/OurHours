@@ -22,11 +22,11 @@ public enum BLEConstants {
     #endif
 
     public static let authTimeoutSeconds: TimeInterval = 6
-    public static let launchReconnectGraceSeconds: TimeInterval = 20
+    public static let launchReconnectGraceSeconds: TimeInterval = 25
     public static let activeSessionHeartbeatSeconds: TimeInterval = 180
     public static let terminatedSessionResumeWindowSeconds: TimeInterval = 600
     public static let failedPeerCooldownSeconds: TimeInterval = 300
-    public static let knownPeerConnectionFailureCooldownSeconds: TimeInterval = 15
-    public static let knownPeerAuthFailureCooldownSeconds: TimeInterval = 15
+    public static let knownPeerConnectionFailureCooldownSeconds: TimeInterval = 10
+    public static let knownPeerAuthFailureCooldownSeconds: TimeInterval = 10
     public static let invalidHandleRediscoveryDelaySeconds: TimeInterval = 0.6
 }

@@ -6,6 +6,13 @@ public final class LocationTimelineStore: Sendable {
     public static let retentionDays = 14
     public let directory: URL
     private var fileURL: URL { directory.appendingPathComponent("location_timeline.json") }
+    private static var atomicWriteOptions: Data.WritingOptions {
+        #if os(iOS)
+        return [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+        return .atomic
+        #endif
+    }
 
     public init(directory: URL = URL.applicationSupportDirectory.appendingPathComponent("OurHours")) {
         self.directory = directory
@@ -24,13 +31,20 @@ public final class LocationTimelineStore: Sendable {
     ) throws -> LocationTimelineSnapshot {
         try modify { snapshot in
             let resolvedArrivedAt: Date
-            if arrivalUnknown, let departedAt = visit.departedAt {
-                resolvedArrivedAt = Self.inferArrivalDate(
+            if arrivalUnknown {
+                let referenceTime = visit.departedAt ?? visit.recordedAt
+                if let inferred = Self.inferArrivalDate(
                     forLatitude: visit.latitude,
                     longitude: visit.longitude,
-                    departedAt: departedAt,
+                    departedAt: referenceTime,
                     in: snapshot
-                )
+                ) {
+                    resolvedArrivedAt = inferred
+                } else if let departedAt = visit.departedAt {
+                    resolvedArrivedAt = departedAt.addingTimeInterval(-300)
+                } else {
+                    resolvedArrivedAt = min(visit.arrivedAt, referenceTime)
+                }
             } else if let departedAt = visit.departedAt, visit.arrivedAt >= departedAt {
                 resolvedArrivedAt = departedAt.addingTimeInterval(-300)
             } else {
@@ -68,12 +82,39 @@ public final class LocationTimelineStore: Sendable {
                     recordedAt: now
                 )
                 bucket.visits[matchIndex] = existing
+                bucket.updatedAt = now
+                snapshot.localBuckets[dayKey] = bucket
+            } else if let departedAt = normalizedVisit.departedAt,
+                      let openMatch = Self.findMatchingOpenVisit(
+                          in: snapshot,
+                          for: normalizedVisit,
+                          departedAt: departedAt,
+                          arrivalUnknown: arrivalUnknown
+                      ) {
+                var targetBucket = snapshot.localBuckets[openMatch.dayKey]!
+                let existing = targetBucket.visits[openMatch.index]
+                let useNewCoords = normalizedVisit.horizontalAccuracy <= existing.horizontalAccuracy
+                var mergedArrivedAt = min(existing.arrivedAt, normalizedVisit.arrivedAt)
+                if mergedArrivedAt >= departedAt {
+                    mergedArrivedAt = existing.arrivedAt
+                }
+                targetBucket.visits[openMatch.index] = LocationVisitRecord(
+                    id: existing.id,
+                    latitude: useNewCoords ? normalizedVisit.latitude : existing.latitude,
+                    longitude: useNewCoords ? normalizedVisit.longitude : existing.longitude,
+                    horizontalAccuracy: min(existing.horizontalAccuracy, normalizedVisit.horizontalAccuracy),
+                    arrivedAt: mergedArrivedAt,
+                    departedAt: departedAt,
+                    recordedAt: now
+                )
+                targetBucket.updatedAt = now
+                snapshot.localBuckets[openMatch.dayKey] = targetBucket
             } else {
                 bucket.visits.append(normalizedVisit)
+                bucket.updatedAt = now
+                snapshot.localBuckets[dayKey] = bucket
             }
 
-            bucket.updatedAt = now
-            snapshot.localBuckets[dayKey] = bucket
             Self.pruneOldBuckets(&snapshot, now: now)
         }
     }
@@ -161,9 +202,9 @@ public final class LocationTimelineStore: Sendable {
                 oldestKeyDate = now.addingTimeInterval(-Double(Self.retentionDays) * 86_400)
             }
 
-            // Preserve already-derived matches whose end predates the raw coordinate window.
+            // Preserve already-derived matches whose start predates the raw coordinate window.
             let preservedOlder = snapshot.matchedSessions.filter {
-                $0.pairID == pairID && $0.endedAt < oldestKeyDate
+                $0.pairID == pairID && $0.startedAt < oldestKeyDate
             }
 
             let fresh = LocationProximityMatcher.match(
@@ -215,7 +256,7 @@ public final class LocationTimelineStore: Sendable {
         longitude: Double,
         departedAt: Date,
         in snapshot: LocationTimelineSnapshot
-    ) -> Date {
+    ) -> Date? {
         struct Candidate {
             let time: Date
             let latitude: Double
@@ -257,7 +298,56 @@ public final class LocationTimelineStore: Sendable {
             }
         }
 
-        return earliestContiguous ?? departedAt.addingTimeInterval(-300)
+        return earliestContiguous
+    }
+
+    private static func findMatchingOpenVisit(
+        in snapshot: LocationTimelineSnapshot,
+        for visit: LocationVisitRecord,
+        departedAt: Date,
+        arrivalUnknown: Bool
+    ) -> (dayKey: String, index: Int)? {
+        var best: (dayKey: String, index: Int, arrivedAt: Date)?
+        for dayKey in snapshot.localBuckets.keys.sorted(by: >) {
+            guard let visits = snapshot.localBuckets[dayKey]?.visits else { continue }
+            for (index, existing) in visits.enumerated() {
+                guard existing.departedAt == nil, existing.arrivedAt < departedAt else { continue }
+                guard departedAt.timeIntervalSince(existing.arrivedAt) <= 48 * 3_600 else { continue }
+                let dist = LocationProximityMatcher.haversineMeters(
+                    lat1: existing.latitude, lon1: existing.longitude,
+                    lat2: visit.latitude, lon2: visit.longitude
+                )
+                guard dist <= 80 else { continue }
+                guard arrivalUnknown || abs(existing.arrivedAt.timeIntervalSince(visit.arrivedAt)) <= 300 else {
+                    continue
+                }
+                let hasInterveningFarObservation = snapshot.localBuckets.values.contains { bucket in
+                    bucket.points.contains { point in
+                        point.timestamp > existing.arrivedAt && point.timestamp < departedAt
+                            && point.horizontalAccuracy >= 0
+                            && point.horizontalAccuracy <= LocationProximityMatcher.maxAcceptedAccuracyMeters
+                            && LocationProximityMatcher.haversineMeters(
+                                lat1: existing.latitude, lon1: existing.longitude,
+                                lat2: point.latitude, lon2: point.longitude
+                            ) > LocationProximityMatcher.maxProximityMeters
+                    } || bucket.visits.contains { other in
+                        other.id != existing.id
+                            && other.arrivedAt > existing.arrivedAt && other.arrivedAt < departedAt
+                            && other.horizontalAccuracy >= 0
+                            && other.horizontalAccuracy <= LocationProximityMatcher.maxAcceptedAccuracyMeters
+                            && LocationProximityMatcher.haversineMeters(
+                                lat1: existing.latitude, lon1: existing.longitude,
+                                lat2: other.latitude, lon2: other.longitude
+                            ) > LocationProximityMatcher.maxProximityMeters
+                    }
+                }
+                guard !hasInterveningFarObservation else { continue }
+                if best == nil || existing.arrivedAt > best!.arrivedAt {
+                    best = (dayKey, index, existing.arrivedAt)
+                }
+            }
+        }
+        return best.map { ($0.dayKey, $0.index) }
     }
 
     private static func findMatchingVisitIndex(in existingVisits: [LocationVisitRecord], for visit: LocationVisitRecord) -> Int? {
@@ -312,6 +402,6 @@ public final class LocationTimelineStore: Sendable {
         encoder.dateEncodingStrategy = .secondsSince1970
         let data = try encoder.encode(snapshot)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: fileURL, options: .atomic)
+        try data.write(to: fileURL, options: Self.atomicWriteOptions)
     }
 }

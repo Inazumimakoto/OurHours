@@ -2,6 +2,7 @@
 import Foundation
 import Observation
 import OurHoursCore
+import UIKit
 
 /// Background + foreground precise location collector with visits, SLC, and dynamic 100m exit geofencing.
 @MainActor
@@ -21,6 +22,10 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
     private var pendingAlwaysUpgrade = false
     private var pendingFixSource: LocationSampleSource = .foregroundFix
     private var lastAnchorCoordinate: CLLocationCoordinate2D?
+    private var fixBackgroundTaskID = UIBackgroundTaskIdentifier.invalid
+    private var pendingFixContinuations: [(id: UUID, continuation: CheckedContinuation<Void, Never>)] = []
+    private var lastCoarseRetryAt = Date.distantPast
+    private var lastWakeAtBySource: [String: Date] = [:]
 
     private(set) var isEnabled: Bool
     private(set) var authorizationStatus: CLAuthorizationStatus
@@ -132,12 +137,91 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
     }
 
     func requestFreshFix(source: LocationSampleSource) {
+        requestFreshFix(source: source, preserveSource: false)
+    }
+
+    func requestFreshFixAndWait(source: LocationSampleSource, timeoutSeconds: TimeInterval = 4.0) async {
         refreshStatus()
         guard isEnabled else { return }
         guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else { return }
-        pendingFixSource = source
+        let waiterID = UUID()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            pendingFixContinuations.append((id: waiterID, continuation: continuation))
+            requestFreshFix(source: source, preserveSource: false)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(max(0.5, timeoutSeconds)))
+                self?.resumeFixWaiter(id: waiterID)
+            }
+        }
+    }
+
+    private func requestFreshFix(source: LocationSampleSource, preserveSource: Bool) {
+        refreshStatus()
+        guard isEnabled else {
+            finishPendingFixRequest()
+            return
+        }
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else {
+            finishPendingFixRequest()
+            return
+        }
+        if !preserveSource {
+            pendingFixSource = source
+        }
+        beginFixBackgroundTaskIfNeeded()
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         manager.requestLocation()
+    }
+
+    private func beginFixBackgroundTaskIfNeeded() {
+        guard fixBackgroundTaskID == .invalid else { return }
+        fixBackgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "OurHoursLocationFix") { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finishPendingFixRequest()
+            }
+        }
+    }
+
+    private func endFixBackgroundTaskIfNeeded() {
+        if fixBackgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(fixBackgroundTaskID)
+            fixBackgroundTaskID = .invalid
+        }
+    }
+
+    private func finishPendingFixRequest() {
+        endFixBackgroundTaskIfNeeded()
+        let waiters = pendingFixContinuations
+        pendingFixContinuations.removeAll()
+        for waiter in waiters {
+            waiter.continuation.resume()
+        }
+    }
+
+    private func resumeFixWaiter(id: UUID) {
+        guard let index = pendingFixContinuations.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = pendingFixContinuations.remove(at: index)
+        waiter.continuation.resume()
+        if pendingFixContinuations.isEmpty {
+            endFixBackgroundTaskIfNeeded()
+        }
+    }
+
+    private func emitWake(_ source: String) {
+        let now = Date.now
+        if let last = lastWakeAtBySource[source], now.timeIntervalSince(last) < 5 {
+            return
+        }
+        lastWakeAtBySource[source] = now
+        onWake(source)
+    }
+
+    private nonisolated func runOnMainActor(_ work: @escaping @MainActor @Sendable () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { work() }
+        } else {
+            Task { @MainActor in work() }
+        }
     }
 
     private func startMonitoring() {
@@ -153,6 +237,7 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
 
     private func stopMonitoring() {
         clearAnchorRegion()
+        finishPendingFixRequest()
         manager.allowsBackgroundLocationUpdates = false
         guard isMonitoring else { return }
         manager.stopMonitoringSignificantLocationChanges()
@@ -162,7 +247,7 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
 
     private func updateAnchorRegionIfNeeded(latitude: Double, longitude: Double, accuracy: Double) {
         guard isEnabled, authorizationStatus == .authorizedAlways else { return }
-        guard accuracy >= 0, accuracy <= 65 else { return }
+        guard accuracy >= 0, accuracy <= 100 else { return }
         guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else { return }
 
         if let prev = lastAnchorCoordinate {
@@ -222,42 +307,59 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        Task { @MainActor [weak self] in
+        runOnMainActor { [weak self] in
             self?.handleAuthChange()
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        let best = locations
-            .filter { $0.horizontalAccuracy >= 0 }
-            .min { $0.horizontalAccuracy < $1.horizontalAccuracy } ?? locations.last
-        guard let best else { return }
-        let lat = best.coordinate.latitude
-        let lon = best.coordinate.longitude
-        let acc = best.horizontalAccuracy
-        let timestamp = best.timestamp
+        let samples = locations.map { (
+            timestamp: $0.timestamp,
+            latitude: $0.coordinate.latitude,
+            longitude: $0.coordinate.longitude,
+            accuracy: $0.horizontalAccuracy
+        ) }
 
-        Task { @MainActor [weak self] in
-            guard let self, self.isEnabled else { return }
+        runOnMainActor { [weak self] in
+            guard let self else { return }
+            guard self.isEnabled else {
+                self.finishPendingFixRequest()
+                return
+            }
             let now = Date.now
             self.lastCaptureDate = now
 
-            if acc >= 0 && acc <= LocationProximityMatcher.maxAcceptedAccuracyMeters {
+            let valid = samples.filter { $0.accuracy >= 0 }
+            let recent = valid.filter { now.timeIntervalSince($0.timestamp) <= 180 }
+            let chosen: (timestamp: Date, latitude: Double, longitude: Double, accuracy: Double)?
+            if let freshBest = recent.min(by: { $0.accuracy < $1.accuracy }) {
+                chosen = freshBest
+            } else {
+                let acceptable = valid.filter { now.timeIntervalSince($0.timestamp) <= 900 }
+                chosen = acceptable.max(by: { $0.timestamp < $1.timestamp })
+            }
+            self.finishPendingFixRequest()
+
+            guard let best = chosen else { return }
+
+            if best.accuracy <= LocationProximityMatcher.maxAcceptedAccuracyMeters {
                 let source = self.pendingFixSource
                 self.pendingFixSource = .significantChange
                 let point = LocationPointSample(
-                    timestamp: timestamp,
-                    latitude: lat,
-                    longitude: lon,
-                    horizontalAccuracy: acc,
+                    timestamp: best.timestamp,
+                    latitude: best.latitude,
+                    longitude: best.longitude,
+                    horizontalAccuracy: best.accuracy,
                     source: source
                 )
                 self.onPoint(point)
-                self.updateAnchorRegionIfNeeded(latitude: lat, longitude: lon, accuracy: acc)
-            } else {
-                self.requestFreshFix(source: .significantChange)
+                self.updateAnchorRegionIfNeeded(latitude: best.latitude, longitude: best.longitude, accuracy: best.accuracy)
+            } else if self.accuracyAuthorization == .fullAccuracy,
+                      now.timeIntervalSince(self.lastCoarseRetryAt) >= 60 {
+                self.lastCoarseRetryAt = now
+                self.requestFreshFix(source: self.pendingFixSource, preserveSource: true)
             }
-            self.onWake("significantLocation")
+            self.emitWake("significantLocation")
         }
     }
 
@@ -268,7 +370,7 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
         let rawArrival = visit.arrivalDate
         let rawDeparture = visit.departureDate
 
-        Task { @MainActor [weak self] in
+        runOnMainActor { [weak self] in
             guard let self, self.isEnabled else { return }
             let now = Date.now
             self.lastCaptureDate = now
@@ -286,21 +388,24 @@ final class LocationPresenceMonitor: NSObject, CLLocationManagerDelegate {
             )
             self.onVisit(record, arrivalUnknown)
             self.updateAnchorRegionIfNeeded(latitude: lat, longitude: lon, accuracy: acc)
-            self.onWake(departedAt == nil ? "locationVisitArrival" : "locationVisitDeparture")
+            self.emitWake(departedAt == nil ? "locationVisitArrival" : "locationVisitDeparture")
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         let regionID = region.identifier
-        Task { @MainActor [weak self] in
+        runOnMainActor { [weak self] in
             guard let self, self.isEnabled, regionID == Self.anchorRegionID else { return }
             self.clearAnchorRegion()
             self.requestFreshFix(source: .geofenceExit)
-            self.onWake("geofenceExit")
+            self.emitWake("geofenceExit")
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
         // Transient CoreLocation errors are non-fatal; subsequent visit/SLC wakes will retry.
+        runOnMainActor { [weak self] in
+            self?.finishPendingFixRequest()
+        }
     }
 }

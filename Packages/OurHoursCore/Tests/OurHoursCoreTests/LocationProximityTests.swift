@@ -421,4 +421,176 @@ struct LocationProximityTests {
         #expect(try store.load() == first.snapshot)
         #expect(try !store.mergeRemoteOwnBuckets([key: bucket], role: .partnerA, now: now).didChange)
     }
+
+    @Test func stationaryPointBridgeSupportsEightHoursAndBreaksOnAwayPoint() {
+        let pairID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let t4h = t0.addingTimeInterval(4 * 3_600)
+        let t8h = t0.addingTimeInterval(8 * 3_600)
+        let day = LocationDayKey.utcDayKey(for: t0)
+        let sameLat = 35.681236
+        let sameLon = 139.767125
+
+        let pStart = LocationPointSample(timestamp: t0, latitude: sameLat, longitude: sameLon, horizontalAccuracy: 15, source: .significantChange)
+        let pEnd = LocationPointSample(timestamp: t8h, latitude: sameLat, longitude: sameLon, horizontalAccuracy: 15, source: .significantChange)
+        let peerStart = LocationPointSample(timestamp: t0, latitude: sameLat, longitude: sameLon, horizontalAccuracy: 15, source: .significantChange)
+        let peerEnd = LocationPointSample(timestamp: t8h, latitude: sameLat, longitude: sameLon, horizontalAccuracy: 15, source: .significantChange)
+
+        let bridged = LocationProximityMatcher.match(
+            pairID: pairID,
+            localBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerA, points: [pStart, pEnd])],
+            peerBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerB, points: [peerStart, peerEnd])],
+            now: t8h.addingTimeInterval(600)
+        )
+        #expect(bridged.count == 1)
+        #expect(bridged.first?.startedAt == t0.addingTimeInterval(-300))
+        #expect(bridged.first?.endedAt == t8h.addingTimeInterval(300))
+
+        let awayMid = LocationPointSample(timestamp: t4h, latitude: 35.691236, longitude: sameLon, horizontalAccuracy: 15, source: .significantChange)
+        let broken = LocationProximityMatcher.match(
+            pairID: pairID,
+            localBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerA, points: [pStart, awayMid, pEnd])],
+            peerBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerB, points: [peerStart, peerEnd])],
+            now: t8h.addingTimeInterval(600)
+        )
+        #expect(broken.allSatisfy { $0.durationSeconds <= 600 })
+        #expect(!broken.contains { $0.durationSeconds > 1_000 })
+    }
+
+    @Test func openVisitSupportsTwentyFourHourStayWithoutEighteenHourCutoff() throws {
+        let pairID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let now = t0.addingTimeInterval(24 * 3_600)
+        let day = LocationDayKey.utcDayKey(for: t0)
+
+        let localOpen = LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 20, arrivedAt: t0, departedAt: nil, recordedAt: t0)
+        let peerOpen = LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 20, arrivedAt: t0, departedAt: nil, recordedAt: t0)
+
+        let matches = LocationProximityMatcher.match(
+            pairID: pairID,
+            localBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerA, visits: [localOpen])],
+            peerBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerB, visits: [peerOpen])],
+            now: now
+        )
+        #expect(matches.count == 1)
+        let match = try #require(matches.first)
+        #expect(match.startedAt == t0)
+        #expect(match.endedAt == now)
+        #expect(match.durationSeconds == 86_400)
+    }
+
+    @Test func singleLowAccuracyDriftWithQuickReturnDoesNotBreakOpenVisitOrStationaryBridge() {
+        let pairID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let tDrift = t0.addingTimeInterval(3_600)
+        let tReturn = t0.addingTimeInterval(4_200)
+        let tEnd = t0.addingTimeInterval(7_200)
+        let day = LocationDayKey.utcDayKey(for: t0)
+
+        let driftPoint = LocationPointSample(timestamp: tDrift, latitude: 35.6830, longitude: 139.767125, horizontalAccuracy: 90, source: .significantChange)
+        let returnPoint = LocationPointSample(timestamp: tReturn, latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 20, source: .significantChange)
+        let startPoint = LocationPointSample(timestamp: t0, latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, source: .significantChange)
+
+        let localOpen = LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, arrivedAt: t0, departedAt: nil, recordedAt: t0)
+        let peerOpen = LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, arrivedAt: t0, departedAt: nil, recordedAt: t0)
+
+        let openMatches = LocationProximityMatcher.match(
+            pairID: pairID,
+            localBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerA, visits: [localOpen], points: [driftPoint, returnPoint])],
+            peerBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerB, visits: [peerOpen])],
+            now: tEnd
+        )
+        #expect(openMatches.count == 1)
+        #expect(openMatches.first?.startedAt == t0)
+        #expect(openMatches.first?.endedAt == tEnd)
+
+        let peerEndPoint = LocationPointSample(timestamp: tReturn, latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, source: .significantChange)
+        let bridgedPoints = LocationProximityMatcher.match(
+            pairID: pairID,
+            localBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerA, points: [startPoint, driftPoint, returnPoint])],
+            peerBuckets: [DayLocationBucket(dayKeyUTC: day, role: .partnerB, points: [startPoint, peerEndPoint])],
+            now: tEnd
+        )
+        #expect(bridgedPoints.count == 1)
+        #expect(bridgedPoints.first?.startedAt == t0.addingTimeInterval(-300))
+        #expect(bridgedPoints.first?.endedAt == tReturn.addingTimeInterval(300))
+    }
+
+    @Test func arrivalUnknownOpenVisitBackfillsArrivalFromPriorNearbyPoint() throws {
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocationTimelineStore(directory: directory)
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let tVisit = t0.addingTimeInterval(600)
+
+        try store.recordPoint(
+            LocationPointSample(timestamp: t0, latitude: 35.71022, longitude: 139.57188, horizontalAccuracy: 10, source: .foregroundFix),
+            role: .partnerB,
+            now: t0
+        )
+        let snapshot = try store.recordVisit(
+            LocationVisitRecord(latitude: 35.71022, longitude: 139.57188, horizontalAccuracy: 12, arrivedAt: tVisit, departedAt: nil, recordedAt: tVisit),
+            role: .partnerB,
+            arrivalUnknown: true,
+            now: tVisit
+        )
+        let dayKey = LocationDayKey.utcDayKey(for: t0)
+        let stored = try #require(snapshot.localBuckets[dayKey]?.visits.first)
+        #expect(stored.arrivedAt == t0)
+        #expect(stored.departedAt == nil)
+    }
+
+    @Test func crossUTCDayMatchedSessionPreservedBeyondRawRetentionWindow() throws {
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocationTimelineStore(directory: directory)
+        let pairID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let iso = ISO8601DateFormatter()
+        let day1Late = try #require(iso.date(from: "2026-11-10T22:00:00Z"))
+        let day2Morning = try #require(iso.date(from: "2026-11-11T04:00:00Z"))
+        let nowInitial = try #require(iso.date(from: "2026-11-11T05:00:00Z"))
+        let nowFourteenDaysLater = try #require(iso.date(from: "2026-11-24T12:00:00Z"))
+
+        let localVisit = LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, arrivedAt: day1Late, departedAt: day2Morning, recordedAt: day2Morning)
+        let peerVisit = LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, arrivedAt: day1Late, departedAt: day2Morning, recordedAt: day2Morning)
+        let peerKey = LocationDayKey.utcDayKey(for: day1Late)
+        try store.recordVisit(localVisit, role: .partnerA, now: nowInitial)
+        try store.replacePeerBuckets([peerKey: DayLocationBucket(dayKeyUTC: peerKey, role: .partnerB, updatedAt: nowInitial, visits: [peerVisit])], now: nowInitial)
+        let initial = try store.recomputeMatches(pairID: pairID, now: nowInitial)
+        #expect(initial.matchedSessions.count == 1)
+
+        let afterRetention = try store.recomputeMatches(pairID: pairID, now: nowFourteenDaysLater)
+        #expect(afterRetention.localBuckets["2026-11-10"] == nil)
+        #expect(afterRetention.matchedSessions.count == 1)
+        #expect(afterRetention.matchedSessions.first?.startedAt == day1Late)
+        #expect(afterRetention.matchedSessions.first?.endedAt == day2Morning)
+    }
+
+    @Test func crossUTCDayDepartureVisitClosesPreviousUTCDayOpenVisit() throws {
+        let directory = URL.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LocationTimelineStore(directory: directory)
+        let iso = ISO8601DateFormatter()
+        let arrived = try #require(iso.date(from: "2026-11-23T22:00:00Z"))
+        let departed = try #require(iso.date(from: "2026-11-24T02:00:00Z"))
+        let recorded = try #require(iso.date(from: "2026-11-24T02:05:00Z"))
+
+        try store.recordVisit(
+            LocationVisitRecord(latitude: 35.681236, longitude: 139.767125, horizontalAccuracy: 15, arrivedAt: arrived, departedAt: nil, recordedAt: arrived),
+            role: .partnerB,
+            now: arrived
+        )
+        let updated = try store.recordVisit(
+            LocationVisitRecord(latitude: 35.681250, longitude: 139.767140, horizontalAccuracy: 12, arrivedAt: departed, departedAt: departed, recordedAt: recorded),
+            role: .partnerB,
+            arrivalUnknown: true,
+            now: recorded
+        )
+
+        let prevDayVisit = try #require(updated.localBuckets["2026-11-23"]?.visits.first)
+        #expect(prevDayVisit.arrivedAt == arrived)
+        #expect(prevDayVisit.departedAt == departed)
+        let nextDayVisits = updated.localBuckets["2026-11-24"]?.visits ?? []
+        #expect(nextDayVisits.isEmpty)
+    }
 }

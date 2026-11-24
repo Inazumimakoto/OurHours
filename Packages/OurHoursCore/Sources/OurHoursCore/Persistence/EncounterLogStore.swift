@@ -33,6 +33,13 @@ public final class EncounterLogStore: Sendable {
     private let lock = Mutex(())
     private var sessionsURL: URL { directory.appendingPathComponent("sessions.json") }
     private var eventsURL: URL { directory.appendingPathComponent("events.jsonl") }
+    private static var atomicWriteOptions: Data.WritingOptions {
+        #if os(iOS)
+        return [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+        return .atomic
+        #endif
+    }
 
     public init(directory: URL = URL.applicationSupportDirectory.appendingPathComponent("OurHours")) {
         self.directory = directory
@@ -46,7 +53,7 @@ public final class EncounterLogStore: Sendable {
         try lock.withLock { _ in
             let data = try JSONEncoder().encode(sessions)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: sessionsURL, options: .atomic)
+            try data.write(to: sessionsURL, options: Self.atomicWriteOptions)
         }
     }
 
@@ -56,7 +63,7 @@ public final class EncounterLogStore: Sendable {
             line.append(10)
             guard FileManager.default.fileExists(atPath: eventsURL.path) else {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                try line.write(to: eventsURL, options: .atomic)
+                try line.write(to: eventsURL, options: Self.atomicWriteOptions)
                 return
             }
             let handle = try FileHandle(forUpdating: eventsURL)
